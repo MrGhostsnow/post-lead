@@ -21,8 +21,9 @@ request arriving. Serverless functions are a poor fit for that.
 
 ## Lead lifecycle
 
-1. **Lead arrives** via `/api/intake/:operationId` (forms) or a first message on
-   the client number. `createLead` assigns an owner by rotation and schedules
+1. **Lead arrives** via `/api/intake/:operationId` (forms), a Lead Ads
+   submission (`/api/webhooks/meta-leads`, fetched from the Graph API by the
+   worker) or a first message on the client number. `createLead` assigns an owner by rotation and schedules
    `notify_owner_new_lead` and, with consent, `first_contact`.
 2. **First contact** is a template sent from the client number. It schedules the
    follow-ups from the operation's cadence.
@@ -36,7 +37,15 @@ request arriving. Serverless functions are a poor fit for that.
    negotiating).
 6. **Button tap** arrives on the tool number and updates the stage.
 
-Every step appends to `events`, which the weekly report will read.
+Every step appends to `events`. The weekly report is computed from `leads`
+and stored as an event too, so the panel can show the history.
+
+## Business hours
+
+Optional per operation (`operations.business_hours`). Outside them, a lead's
+message gets the out-of-hours text and the owner notification, reminder and
+manager alert move to the next opening. The first contact is never delayed:
+answering within seconds is the product's promise.
 
 ## Scheduling model
 
@@ -47,6 +56,10 @@ Each action re-checks the lead before sending, so a cancelled race never
 messages a lead who already replied.
 
 ## Known gaps
+
+- Meta can deliver webhooks out of order. A lead message older than the last
+  answer from the app does not start reminders, and every reminder re-checks
+  before sending.
 
 - The `smb_message_echoes` payload shape must be confirmed against Meta's
   coexistence docs before going live (`packages/core/src/webhook.ts`).

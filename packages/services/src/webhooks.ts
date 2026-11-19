@@ -1,19 +1,27 @@
 import { createHash } from "node:crypto";
 import {
+  isWithinBusinessHours,
+  nextOpening,
+  parseLeadgenWebhook,
   parseWhatsAppWebhook,
   planResponseEscalation,
   planStaleCheck,
   type BusinessEchoEvent,
   type CadenceConfig,
   type InboundMessageEvent,
+  type MetaLeadsClient,
   type StatusEvent,
 } from "@post-lead/core";
 import { eq, events, leads, messages, operations, sql, webhookEvents, type Database } from "@post-lead/db";
+import { handleLeadgen } from "./leadAds";
 import { createLead, findLeadByPhone } from "./leads";
 import { parseOutcomePayload } from "./notifications";
 import { cancelPending, hasPending, schedule } from "./scheduling";
 
 const MAX_ATTEMPTS = 5;
+const OUT_OF_HOURS_REPLY_GAP_MS = 12 * 60 * 60 * 1000;
+
+export const WEBHOOK_PROVIDERS = { whatsapp: "whatsapp", metaLeadgen: "meta_leadgen" } as const;
 
 /** Stores a raw webhook. Returns false when the same payload was already stored. */
 export async function storeWebhook(db: Database, provider: string, rawBody: string): Promise<boolean> {
@@ -41,9 +49,9 @@ export function operationCadence(operation: typeof operations.$inferSelect): Cad
  */
 export async function processPendingWebhooks(
   db: Database,
-  options: { toolPhoneNumberId: string; limit?: number },
+  options: { toolPhoneNumberId: string; leadsClient?: MetaLeadsClient; limit?: number },
 ): Promise<number> {
-  const claimed = await db.execute<{ id: string; payload: unknown }>(sql`
+  const claimed = await db.execute<{ id: string; provider: string; payload: unknown }>(sql`
     update webhook_events
        set attempts = attempts + 1
      where id in (
@@ -53,12 +61,18 @@ export async function processPendingWebhooks(
         limit ${options.limit ?? 20}
         for update skip locked
      )
-    returning id, payload
+    returning id, provider, payload
   `);
 
   for (const row of claimed) {
     try {
-      for (const event of parseWhatsAppWebhook(row.payload)) {
+      if (row.provider === WEBHOOK_PROVIDERS.metaLeadgen) {
+        if (!options.leadsClient) throw new Error("Lead Ads webhook received but no leads client is configured");
+        for (const event of parseLeadgenWebhook(row.payload)) {
+          await handleLeadgen(db, options.leadsClient, event);
+        }
+      }
+      for (const event of row.provider === WEBHOOK_PROVIDERS.whatsapp ? parseWhatsAppWebhook(row.payload) : []) {
         if (event.kind === "inbound_message") {
           if (event.phoneNumberId === options.toolPhoneNumberId) await handlePersonReply(db, event);
           else await handleLeadMessage(db, event);
@@ -153,10 +167,23 @@ async function handleLeadMessage(db: Database, event: InboundMessageEvent) {
     await cancelPending(tx, leadId, ["first_contact", "follow_up", "stale_check"]);
     await schedule(tx, { operationId: operation.id, leadId, ...planStaleCheck(event.timestamp, cadence) });
 
+    const hours = operation.businessHours;
+    const isOpen = !hours || isWithinBusinessHours(event.timestamp, hours);
+
+    // Outside business hours: tell the lead when they will be answered (once per 12h).
+    const lastOohReply = lead.lastOutOfHoursReplyAt?.getTime() ?? 0;
+    if (!isOpen && operation.cadence.outOfHoursMessage && event.timestamp.getTime() - lastOohReply > OUT_OF_HOURS_REPLY_GAP_MS) {
+      await schedule(tx, { operationId: operation.id, leadId, kind: "out_of_hours_reply", runAt: new Date() });
+    }
+
     // Start the clock for a person to answer, unless it is already running.
-    if (!(await hasPending(tx, leadId, "owner_reminder"))) {
-      await schedule(tx, { operationId: operation.id, leadId, kind: "notify_owner_reply", runAt: new Date() });
-      for (const action of planResponseEscalation(event.timestamp, cadence)) {
+    // Outside business hours, the notification and the clock wait for the next opening.
+    // Meta may deliver a person's answer before the lead message it answers.
+    const alreadyAnswered = Boolean(lead.lastBusinessReplyAt && lead.lastBusinessReplyAt >= event.timestamp);
+    if (!alreadyAnswered && !(await hasPending(tx, leadId, "owner_reminder"))) {
+      const notifyAt = (hours && nextOpening(new Date(), hours)) || new Date();
+      await schedule(tx, { operationId: operation.id, leadId, kind: "notify_owner_reply", runAt: notifyAt });
+      for (const action of planResponseEscalation(event.timestamp, cadence, hours)) {
         await schedule(tx, {
           operationId: operation.id,
           leadId,

@@ -26,6 +26,13 @@ the client's segment; these are generic starting points.
 
 The last follow-up offers a way out; it protects the client's number quality.
 
+### Out-of-hours message (free text, not a template)
+
+Set per operation in `operations.cadence.outOfHoursMessage`. It is a reply to
+the lead's own message, so it needs no approval:
+
+> Recebemos sua mensagem! Nosso horário de atendimento é de segunda a sexta, das 8h às 18h. Assim que abrirmos, alguém continua com você por aqui.
+
 ## To sellers and managers (tool's number)
 
 Fixed names, defined in `packages/services/src/notifications.ts`.
@@ -51,3 +58,13 @@ Fixed names, defined in `packages/services/src/notifications.ts`.
 > Como ficou o atendimento de {{1}}?
 
 Quick-reply buttons, in this order: **Ganhou**, **Perdeu**, **Segue negociando**.
+
+### `weekly_report`
+
+> Resumo da semana — {{1}}
+> Leads recebidos: {{2}}
+> Contatados em até 1 minuto: {{3}}
+> Responderam: {{4}}
+> Tempo para a equipe responder (mediana): {{5}}
+> Responderam e ficaram sem resposta da equipe: {{6}}
+> Vendas fechadas: {{7}}

@@ -12,7 +12,7 @@ The product spec lives outside this repo (MVP specification doc).
 
 ```
 apps/
-  web/        Next.js: WhatsApp webhook, lead intake API, agency panel (to do)
+  web/        Next.js: WhatsApp and Lead Ads webhooks, lead intake API, agency panel (to do)
   worker/     Long-running process: applies webhooks, runs scheduled actions
 packages/
   core/       Pure logic: phone rules, webhook parsing, cadence, round-robin, API client
@@ -54,6 +54,11 @@ WhatsApp use case.
    callback URL to `https://<host>/api/webhooks/whatsapp` with the verify token
    above. Subscribe to `messages` (and later `smb_message_echoes`).
 
+   For Lead Ads, add a second webhook under Webhooks > Page with
+   `https://<host>/api/webhooks/meta-leads`, subscribe to `leadgen`, set
+   `operations.meta_page_id` for the client and fill `META_LEADS_ACCESS_TOKEN`
+   (agency system user with `leads_retrieval` on the client page).
+
 5. **Seed and run**
 
    ```bash
@@ -88,17 +93,29 @@ production.
 ## Rules the code enforces
 
 - No automatic message without `whatsappConsent` (or the lead writing first).
+  Lead Ads consent comes from a `whatsapp_consent` question on the form, or from
+  `lead_ads_disclaimer_consent` when the form text says the lead will be
+  contacted on WhatsApp.
+- A lead who answers "SAIR" is never messaged again.
+- Outside business hours, the lead gets the operation's out-of-hours message
+  (at most once every 12 hours) and the team's reminders wait for the opening.
 - Automatic follow-ups stop the moment the lead replies or a person answers.
 - Outside the 24-hour window only approved templates are sent.
 - Webhooks are verified (`X-Hub-Signature-256`), stored once, then processed.
 - Server code bypasses row-level security, so every query filters by `operation_id`.
 
+## Weekly report
+
+Every Monday at 08:00 (operation timezone) the worker computes the last 7 days
+(leads by source and campaign, share contacted within a minute, median time for
+a person to answer, leads left without an answer, outcomes), stores it as a
+`weekly_report` event and sends a summary to the managers (or the owner in solo
+mode) using the `weekly_report` template.
+
 ## Not built yet
 
 - Coexistence onboarding (Embedded Signup): needs Tech Provider approval.
-- Meta Lead Ads intake.
-- Out-of-hours reply and weekly report.
-- Agency panel and the manager's read-only link.
+- Agency panel and the client's read-only link.
 - Running more than one worker instance (no job lease yet).
 
 `npm audit` reports a moderate esbuild advisory through `drizzle-kit`. It only

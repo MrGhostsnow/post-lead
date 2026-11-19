@@ -4,3 +4,5 @@ export * from "./webhook";
 export * from "./roundRobin";
 export * from "./cadence";
 export * from "./whatsappClient";
+export * from "./leadgen";
+export * from "./report";

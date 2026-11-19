@@ -1,9 +1,18 @@
-import { planFollowUps, planStaleCheck, type WhatsAppClient } from "@post-lead/core";
+import {
+  canSendFreeform,
+  computeWeeklyReport,
+  nextWeeklyReportAt,
+  planFollowUps,
+  planStaleCheck,
+  type WhatsAppClient,
+} from "@post-lead/core";
 import {
   and,
   eq,
   events,
+  gte,
   leads,
+  lt,
   messages,
   operations,
   people,
@@ -73,7 +82,31 @@ export async function runDueActions(ctx: ActionContext, limit = 20): Promise<num
   return claimed.length;
 }
 
+const DEFAULT_TIMEZONE = "America/Sao_Paulo";
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Makes sure every operation has its next weekly report queued. Safe to call often. */
+export async function ensureWeeklyReportsScheduled(db: Database, now = new Date()) {
+  const all = await db.select().from(operations);
+  const queued = await db
+    .select({ operationId: scheduledActions.operationId })
+    .from(scheduledActions)
+    .where(and(eq(scheduledActions.kind, "weekly_report"), eq(scheduledActions.status, "pending")));
+  const hasQueued = new Set(queued.map((q) => q.operationId));
+
+  for (const operation of all) {
+    if (hasQueued.has(operation.id)) continue;
+    await schedule(db, {
+      operationId: operation.id,
+      leadId: null,
+      kind: "weekly_report",
+      runAt: nextWeeklyReportAt(now, operation.businessHours?.timezone ?? DEFAULT_TIMEZONE),
+    });
+  }
+}
+
 async function execute(ctx: ActionContext, action: Action) {
+  if (action.kind === "weekly_report") return weeklyReport(ctx, action);
   if (!action.leadId) return;
   const [lead] = await ctx.db.select().from(leads).where(eq(leads.id, action.leadId));
   const [operation] = await ctx.db.select().from(operations).where(eq(operations.id, action.operationId));
@@ -103,6 +136,8 @@ async function execute(ctx: ActionContext, action: Action) {
       return alertManagers(ctx, lead, operation);
     case "stale_check":
       return staleCheck(ctx, lead, operation);
+    case "out_of_hours_reply":
+      return outOfHoursReply(ctx, lead, operation);
   }
 }
 
@@ -272,5 +307,85 @@ async function askOutcome(ctx: ActionContext, lead: Lead) {
       { index: 1, payload: outcomePayload("lost", lead.id) },
       { index: 2, payload: outcomePayload("open", lead.id) },
     ],
+  });
+}
+
+async function outOfHoursReply(ctx: ActionContext, lead: Lead, operation: Operation) {
+  const text = operation.cadence.outOfHoursMessage;
+  const now = new Date();
+  // Free text is only allowed inside the lead's 24-hour window.
+  if (!text || !operation.phoneNumberId || !lead.whatsappConsent || !canSendFreeform(lead.lastInboundAt, now)) return;
+
+  const id = await ctx.whatsapp.sendText(operation.phoneNumberId, lead.contactPhone, text);
+  await ctx.db.insert(messages).values({
+    operationId: lead.operationId,
+    leadId: lead.id,
+    waMessageId: id,
+    direction: "outbound",
+    sender: "automation",
+    type: "text",
+    body: text,
+    sentAt: now,
+  });
+  await ctx.db
+    .update(leads)
+    .set({ lastOutOfHoursReplyAt: now, lastOutboundAt: now, updatedAt: now })
+    .where(eq(leads.id, lead.id));
+}
+
+async function weeklyReport(ctx: ActionContext, action: Action) {
+  const [operation] = await ctx.db.select().from(operations).where(eq(operations.id, action.operationId));
+  if (!operation) return;
+
+  const periodEnd = action.runAt;
+  const periodStart = new Date(periodEnd.getTime() - WEEK_MS);
+  const rows = await ctx.db
+    .select()
+    .from(leads)
+    .where(and(eq(leads.operationId, operation.id), gte(leads.receivedAt, periodStart), lt(leads.receivedAt, periodEnd)));
+
+  const report = computeWeeklyReport(rows);
+
+  await ctx.db.insert(events).values({
+    operationId: operation.id,
+    type: "weekly_report",
+    payload: { periodStart: periodStart.toISOString(), periodEnd: periodEnd.toISOString(), report },
+  });
+
+  // Managers receive it; in solo mode the owner is the only person.
+  const recipients = await ctx.db
+    .select()
+    .from(people)
+    .where(
+      operation.mode === "solo"
+        ? and(eq(people.operationId, operation.id), eq(people.active, true))
+        : and(eq(people.operationId, operation.id), eq(people.role, "manager"), eq(people.active, true)),
+    );
+
+  const pct = (n: number | null) => (n === null ? "-" : `${n}%`);
+  const params = [
+    operation.name,
+    String(report.leadsReceived),
+    pct(report.contactedWithinMinuteRate),
+    String(report.leadsReplied),
+    report.medianBusinessResponseMinutes === null ? "-" : `${report.medianBusinessResponseMinutes} min`,
+    String(report.repliedWithoutBusinessAnswer),
+    String(report.stages.won),
+  ];
+
+  for (const person of recipients) {
+    await ctx.whatsapp.sendTemplate({
+      phoneNumberId: ctx.toolPhoneNumberId,
+      to: person.whatsappNumber,
+      template: NOTIFICATION_TEMPLATES.weeklyReport,
+      bodyParams: params,
+    });
+  }
+
+  await schedule(ctx.db, {
+    operationId: operation.id,
+    leadId: null,
+    kind: "weekly_report",
+    runAt: nextWeeklyReportAt(periodEnd, operation.businessHours?.timezone ?? DEFAULT_TIMEZONE),
   });
 }

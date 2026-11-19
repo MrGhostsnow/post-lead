@@ -37,6 +37,8 @@ export const actionKind = pgEnum("action_kind", [
   "owner_reminder",
   "manager_alert",
   "stale_check",
+  "out_of_hours_reply",
+  "weekly_report",
 ]);
 export const actionStatus = pgEnum("action_status", ["pending", "running", "done", "cancelled", "failed"]);
 
@@ -61,7 +63,11 @@ export const agencyMembers = pgTable(
 export type CadenceSettings = {
   firstContactTemplate: string;
   followUps: { afterMinutes: number; template: string }[];
-  outOfHoursTemplate?: string;
+  /**
+   * Free text sent when a lead writes outside business hours. It is always a
+   * reply to the lead's own message, so no template is needed.
+   */
+  outOfHoursMessage?: string;
   /** Template language; defaults to "pt_BR". */
   languageCode?: string;
   /** Pass the lead's first name as {{1}}. Defaults to true. */
@@ -82,6 +88,13 @@ export const operations = pgTable("operations", {
   wabaId: text("waba_id"),
   phoneNumberId: text("phone_number_id").unique(),
   displayPhone: text("display_phone"),
+  /** Facebook Page whose Lead Ads forms feed this operation. */
+  metaPageId: text("meta_page_id").unique(),
+  /**
+   * Set to true only when the Lead Ads form shows explicit text that the lead
+   * will be contacted on WhatsApp. A "whatsapp_consent" question overrides it.
+   */
+  leadAdsDisclaimerConsent: boolean("lead_ads_disclaimer_consent").notNull().default(false),
   /** sha256 of the key forms use to post leads to /api/intake/:operationId. */
   intakeKeyHash: text("intake_key_hash"),
   firstResponseMinutes: integer("first_response_minutes").notNull().default(5),
@@ -116,6 +129,7 @@ export const leads = pgTable(
     operationId: uuid("operation_id").notNull().references(() => operations.id, { onDelete: "cascade" }),
     contactName: text("contact_name"),
     contactPhone: text("contact_phone").notNull(),
+    contactEmail: text("contact_email"),
     source: leadSource("source").notNull(),
     campaign: text("campaign"),
     ad: text("ad"),
@@ -133,6 +147,7 @@ export const leads = pgTable(
     /** Last message a person sent from the WhatsApp Business app (not automation). */
     lastBusinessReplyAt: timestamp("last_business_reply_at", { withTimezone: true }),
     lastInboundAt: timestamp("last_inbound_at", { withTimezone: true }),
+    lastOutOfHoursReplyAt: timestamp("last_out_of_hours_reply_at", { withTimezone: true }),
     lastOutboundAt: timestamp("last_outbound_at", { withTimezone: true }),
     ...timestamps,
   },

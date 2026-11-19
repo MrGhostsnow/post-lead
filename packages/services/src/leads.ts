@@ -7,6 +7,7 @@ type LeadSource = (typeof leads.$inferInsert)["source"];
 export type NewLeadInput = {
   operationId: string;
   contactName?: string | null;
+  contactEmail?: string | null;
   phone: string;
   source: LeadSource;
   campaign?: string | null;
@@ -71,6 +72,7 @@ export async function createLead(db: Database, input: NewLeadInput): Promise<New
         operationId: operation.id,
         contactName: input.contactName ?? null,
         contactPhone: phone,
+        contactEmail: input.contactEmail ?? null,
         source: input.source,
         campaign: input.campaign ?? null,
         ad: input.ad ?? null,

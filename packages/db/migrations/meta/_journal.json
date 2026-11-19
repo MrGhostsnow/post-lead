@@ -15,6 +15,13 @@
       "when": 1795091998823,
       "tag": "0001_rls",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1795093144501,
+      "tag": "0002_lead_ads_hours_report",
+      "breakpoints": true
     }
   ]
 }

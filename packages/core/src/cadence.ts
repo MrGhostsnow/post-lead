@@ -43,12 +43,19 @@ export function planFollowUps(firstContactAt: Date, config: CadenceConfig): Plan
 /**
  * When the lead replies, the business has X minutes. The owner gets a reminder
  * at X and the manager an alert at 2X, unless someone answers first.
+ * With business hours set, the clock only starts at the next opening, so
+ * nobody is woken up at night for a lead that wrote at 2 a.m.
  */
-export function planResponseEscalation(leadRepliedAt: Date, config: CadenceConfig): PlannedAction[] {
+export function planResponseEscalation(
+  leadRepliedAt: Date,
+  config: CadenceConfig,
+  hours?: BusinessHours | null,
+): PlannedAction[] {
   const x = minutes(config.firstResponseMinutes);
+  const start = (hours && nextOpening(leadRepliedAt, hours)) || leadRepliedAt;
   return [
-    { kind: "owner_reminder", runAt: new Date(leadRepliedAt.getTime() + x) },
-    { kind: "manager_alert", runAt: new Date(leadRepliedAt.getTime() + 2 * x) },
+    { kind: "owner_reminder", runAt: new Date(start.getTime() + x) },
+    { kind: "manager_alert", runAt: new Date(start.getTime() + 2 * x) },
   ];
 }
 
@@ -97,4 +104,32 @@ export function isWithinBusinessHours(at: Date, hours: BusinessHours): boolean {
   const current = `${get("hour")}:${get("minute")}`;
   const [start, end] = range;
   return current >= start && current < end;
+}
+
+const STEP_MS = 15 * 60 * 1000;
+const SEARCH_LIMIT_MS = 8 * 24 * 60 * 60 * 1000;
+
+/**
+ * The given instant if it is inside business hours, otherwise the start of
+ * the next opening (to 15-minute precision). Null when the schedule has no
+ * open slot in the next 8 days.
+ */
+export function nextOpening(at: Date, hours: BusinessHours): Date | null {
+  if (isWithinBusinessHours(at, hours)) return at;
+
+  let t = Math.ceil(at.getTime() / STEP_MS) * STEP_MS;
+  const limit = at.getTime() + SEARCH_LIMIT_MS;
+  for (; t <= limit; t += STEP_MS) {
+    const candidate = new Date(t);
+    if (isWithinBusinessHours(candidate, hours)) return candidate;
+  }
+  return null;
+}
+
+/** Next Monday 08:00 in the given timezone, strictly after `after`. */
+export function nextWeeklyReportAt(after: Date, timezone: string): Date {
+  const window: BusinessHours = { timezone, days: { mon: ["08:00", "08:15"] } };
+  // Start after the current window so a run at 08:05 does not schedule 08:05 again.
+  const from = new Date(after.getTime() + STEP_MS);
+  return nextOpening(from, window) ?? new Date(after.getTime() + 7 * 24 * 60 * 60 * 1000);
 }

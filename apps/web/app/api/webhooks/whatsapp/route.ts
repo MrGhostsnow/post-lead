@@ -1,42 +1,14 @@
-import { verifyMetaSignature } from "@post-lead/core";
-import { storeWebhook } from "@post-lead/services";
-import { getDb, requiredEnv } from "@/lib/server";
+import { WEBHOOK_PROVIDERS } from "@post-lead/services";
+import { handleDelivery, handleVerification } from "@/lib/metaWebhook";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-/** Meta calls this once, when the webhook URL is saved in the App Dashboard. */
+/** WhatsApp Business Account webhooks: "messages" and "smb_message_echoes". */
 export function GET(request: Request) {
-  const params = new URL(request.url).searchParams;
-  const mode = params.get("hub.mode");
-  const token = params.get("hub.verify_token");
-  const challenge = params.get("hub.challenge");
-
-  if (mode === "subscribe" && token === requiredEnv("META_WEBHOOK_VERIFY_TOKEN") && challenge) {
-    return new Response(challenge, { status: 200 });
-  }
-  return new Response("Forbidden", { status: 403 });
+  return handleVerification(request);
 }
 
-/**
- * Verifies the signature, stores the raw payload and answers 200 right away.
- * The worker does the processing, so a slow step never makes Meta retry.
- */
-export async function POST(request: Request) {
-  const rawBody = await request.text();
-  const signature = request.headers.get("x-hub-signature-256");
-
-  if (!verifyMetaSignature(rawBody, signature, requiredEnv("META_APP_SECRET"))) {
-    return new Response("Invalid signature", { status: 401 });
-  }
-
-  try {
-    await storeWebhook(getDb(), "whatsapp", rawBody);
-  } catch (error) {
-    console.error("[webhook] failed to store", error);
-    // A non-2xx answer makes Meta deliver the payload again later.
-    return new Response("Storage error", { status: 500 });
-  }
-
-  return new Response("OK", { status: 200 });
+export function POST(request: Request) {
+  return handleDelivery(request, WEBHOOK_PROVIDERS.whatsapp);
 }

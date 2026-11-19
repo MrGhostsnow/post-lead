@@ -17,6 +17,12 @@ export const NOTIFICATION_TEMPLATES = {
    * "Ganhou", "Perdeu", "Segue negociando".
    */
   askOutcome: "ask_lead_outcome",
+  /**
+   * {{1}} client name, {{2}} leads received, {{3}} % contacted within 1 minute,
+   * {{4}} leads that replied, {{5}} median minutes for a person to answer,
+   * {{6}} replied but nobody answered, {{7}} won.
+   */
+  weeklyReport: "weekly_report",
 } as const;
 
 export type Outcome = "won" | "lost" | "open";
