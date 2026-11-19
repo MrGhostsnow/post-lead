@@ -1,0 +1,25 @@
+{
+  "name": "post-lead",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Keeps leads from going cold: automatic first contact and follow-ups over the WhatsApp Business Platform.",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev -w @post-lead/web",
+    "dev:worker": "npm run dev -w @post-lead/worker",
+    "build": "npm run build -w @post-lead/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "db:generate": "npm run generate -w @post-lead/db",
+    "db:migrate": "npm run migrate -w @post-lead/db"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
