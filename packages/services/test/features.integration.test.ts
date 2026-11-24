@@ -1,16 +1,15 @@
 /**
- * Lead Ads, business hours and weekly report against a real Postgres.
+ * Business hours, out-of-order delivery and weekly report against a real Postgres.
  * Skipped unless TEST_DATABASE_URL is set. Never point it at production.
  */
-import type { FetchedLead, MetaLeadsClient, SendTemplateInput, WhatsAppClient } from "@post-lead/core";
-import { agencies, and, createDb, eq, events, leads, operations, people, scheduledActions, sql } from "@post-lead/db";
+import type { SendTemplateInput, WhatsAppClient } from "@post-lead/core";
+import { agencies, and, createDb, eq, events, leads, operations, people, scheduledActions } from "@post-lead/db";
 import { describe, expect, it } from "vitest";
 import {
   ensureWeeklyReportsScheduled,
   processPendingWebhooks,
   runDueActions,
   storeWebhook,
-  WEBHOOK_PROVIDERS,
 } from "../src";
 
 const url = process.env.TEST_DATABASE_URL;
@@ -41,65 +40,12 @@ async function setup(db: ReturnType<typeof createDb>, overrides: Partial<typeof 
     .values({
       agencyId: agency!.id,
       name: "Clínica Teste",
-      cadence: { firstContactTemplate: "first_contact", followUps: [] },
+      cadence: { firstReplyMessage: "Oi! Recebemos sua mensagem.", followUps: [] },
       ...overrides,
     })
     .returning();
   return operation!;
 }
-
-describe.skipIf(!url)("Lead Ads intake", () => {
-  it("creates a lead from a leadgen webhook with campaign and consent", async () => {
-    const db = createDb(url);
-    const pageId = `page-${stamp}`;
-    const operation = await setup(db, { metaPageId: pageId, phoneNumberId: `pn-ads-${stamp}`, leadAdsDisclaimerConsent: true });
-    await db.insert(people).values({ operationId: operation.id, name: "Bia", whatsappNumber: "5577911112222", role: "seller" });
-
-    const fetched: FetchedLead = {
-      id: "L1",
-      fieldData: [
-        { name: "full_name", values: ["Carla Dias"] },
-        { name: "phone_number", values: ["+55 77 98111-2233"] },
-        { name: "email", values: ["carla@example.com"] },
-      ],
-      campaignName: "Black Friday",
-      adName: "Video 1",
-      formId: "F1",
-    };
-    const leadsClient: MetaLeadsClient = { fetchLead: async () => fetched };
-
-    await storeWebhook(db, WEBHOOK_PROVIDERS.metaLeadgen, JSON.stringify({
-      object: "page",
-      entry: [{ id: pageId, changes: [{ field: "leadgen", value: { leadgen_id: `L-${stamp}`, page_id: pageId, form_id: "F1", created_time: 1700000000 } }] }],
-    }));
-    await processPendingWebhooks(db, { toolPhoneNumberId: TOOL, leadsClient });
-
-    const [lead] = await db.select().from(leads).where(eq(leads.operationId, operation.id));
-    expect(lead).toMatchObject({
-      contactName: "Carla Dias",
-      contactPhone: "5577981112233",
-      contactEmail: "carla@example.com",
-      source: "meta_lead_ads",
-      campaign: "Black Friday",
-      ad: "Video 1",
-      whatsappConsent: true,
-    });
-    const kinds = await db.select({ kind: scheduledActions.kind }).from(scheduledActions).where(eq(scheduledActions.leadId, lead!.id));
-    expect(kinds.map((k) => k.kind).sort()).toEqual(["first_contact", "notify_owner_new_lead"]);
-  });
-
-  it("keeps the webhook pending when no leads client is configured", async () => {
-    const db = createDb(url);
-    const raw = JSON.stringify({ object: "page", entry: [{ id: "px", changes: [{ field: "leadgen", value: { leadgen_id: `L-none-${stamp}`, page_id: "px" } }] }] });
-    await storeWebhook(db, WEBHOOK_PROVIDERS.metaLeadgen, raw);
-    await processPendingWebhooks(db, { toolPhoneNumberId: TOOL });
-    const rows = await db.execute<{ processed_at: string | null; last_error: string | null }>(
-      sql`select processed_at, last_error from webhook_events where payload::text like ${`%L-none-${stamp}%`}`,
-    );
-    expect(rows[0]?.processed_at).toBeNull();
-    expect(rows[0]?.last_error).toMatch(/no leads client/);
-  });
-});
 
 describe.skipIf(!url)("business hours", () => {
   it("answers out of hours once and delays the seller's clock to the next opening", async () => {
@@ -109,7 +55,7 @@ describe.skipIf(!url)("business hours", () => {
     const operation = await setup(db, {
       phoneNumberId: pn,
       businessHours: { timezone: "America/Sao_Paulo", days: { sun: ["00:00", "00:15"] } },
-      cadence: { firstContactTemplate: "first_contact", followUps: [], outOfHoursMessage: "Recebemos sua mensagem! Respondemos a partir das 8h." },
+      cadence: { firstReplyMessage: "Oi! Já te respondemos.", followUps: [], outOfHoursMessage: "Recebemos sua mensagem! Respondemos a partir das 8h." },
     });
     await db.insert(people).values({ operationId: operation.id, name: "Bia", whatsappNumber: "5577911113333", role: "seller" });
     const wa = fakeWhatsApp();
@@ -127,9 +73,10 @@ describe.skipIf(!url)("business hours", () => {
     await processPendingWebhooks(db, { toolPhoneNumberId: TOOL });
     await runDueActions({ db, whatsapp: wa.client, toolPhoneNumberId: TOOL });
 
+    // Out of hours, the first reply is the out-of-hours message, not both.
     const replies = wa.texts.filter((t) => t.to === "5577982223344");
     expect(replies).toHaveLength(1);
-    expect(replies[0]?.phoneNumberId).toBe(pn);
+    expect(replies[0]).toMatchObject({ phoneNumberId: pn, body: "Recebemos sua mensagem! Respondemos a partir das 8h." });
 
     // A second message right after does not trigger another out-of-hours reply.
     await storeWebhook(db, "whatsapp", inbound(`wamid.ooh2.${stamp}`));
@@ -142,7 +89,7 @@ describe.skipIf(!url)("business hours", () => {
     const [notify] = await db
       .select()
       .from(scheduledActions)
-      .where(and(eq(scheduledActions.leadId, lead!.id), eq(scheduledActions.kind, "notify_owner_reply")));
+      .where(and(eq(scheduledActions.leadId, lead!.id), eq(scheduledActions.kind, "notify_owner_new_lead")));
     expect(notify?.status).toBe("pending");
     expect(notify!.runAt.getTime()).toBeGreaterThan(Date.now());
   });
@@ -187,8 +134,8 @@ describe.skipIf(!url)("weekly report", () => {
     ]);
     const now = Date.now();
     await db.insert(leads).values([
-      { operationId: operation.id, contactPhone: "5577900000001", source: "form", stage: "won", receivedAt: new Date(now - 86400_000), firstContactAt: new Date(now - 86400_000 + 3000) },
-      { operationId: operation.id, contactPhone: "5577900000002", source: "form", stage: "no_reply", receivedAt: new Date(now - 2 * 86400_000), firstContactAt: new Date(now - 2 * 86400_000 + 5000) },
+      { operationId: operation.id, contactPhone: "5577900000001", source: "whatsapp_ad", stage: "won", receivedAt: new Date(now - 86400_000), firstContactAt: new Date(now - 86400_000 + 3000) },
+      { operationId: operation.id, contactPhone: "5577900000002", source: "whatsapp", stage: "no_reply", receivedAt: new Date(now - 2 * 86400_000), firstContactAt: new Date(now - 2 * 86400_000 + 5000) },
     ]);
 
     await ensureWeeklyReportsScheduled(db);
@@ -206,7 +153,7 @@ describe.skipIf(!url)("weekly report", () => {
 
     const sent = wa.templates.filter((t) => t.template === "weekly_report");
     expect(sent.map((s) => s.to)).toEqual(["5577911114444"]); // managers only
-    expect(sent[0]?.bodyParams).toEqual(["Loja Relatório", "2", "100%", "0", "-", "0", "1"]);
+    expect(sent[0]?.bodyParams).toEqual(["Loja Relatório", "2", "100%", "2", "-", "2", "1"]);
 
     const [stored] = await db
       .select()

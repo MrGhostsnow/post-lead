@@ -7,8 +7,11 @@ import type { SendTemplateInput, WhatsAppClient } from "@post-lead/core";
 import {
   agencies,
   and,
+  contacts,
   createDb,
   eq,
+  events,
+  historyMessages,
   leads,
   operations,
   people,
@@ -16,191 +19,235 @@ import {
   sql,
 } from "@post-lead/db";
 import { describe, expect, it } from "vitest";
-import {
-  createLead,
-  outcomePayload,
-  processPendingWebhooks,
-  runDueActions,
-  storeWebhook,
-} from "../src";
+import { buttonPayload, processPendingWebhooks, runDueActions, storeWebhook } from "../src";
 
 const url = process.env.TEST_DATABASE_URL;
 const TOOL = "tool-pn";
-const CLIENT = `client-pn-${Date.now()}`;
+const stamp = Date.now();
+let seq = 0;
+const wamid = (tag: string) => `wamid.${tag}.${stamp}.${++seq}`;
+const unix = (offsetSeconds = 0) => String(Math.floor(Date.now() / 1000) + offsetSeconds);
 
 function fakeWhatsApp() {
-  const sent: SendTemplateInput[] = [];
+  const templates: SendTemplateInput[] = [];
+  const texts: { phoneNumberId: string; to: string; body: string }[] = [];
   let n = 0;
   const client: WhatsAppClient = {
-    async sendText() {
-      return `wamid.text.${++n}`;
+    async sendText(phoneNumberId, to, body) {
+      texts.push({ phoneNumberId, to, body });
+      return `wamid.out.text.${stamp}.${++n}`;
     },
     async sendTemplate(input) {
-      sent.push(input);
-      return `wamid.tpl.${Date.now()}.${++n}`;
+      templates.push(input);
+      return `wamid.out.tpl.${stamp}.${++n}`;
     },
   };
-  return { client, sent };
+  return { client, templates, texts };
 }
 
-const webhook = (field: string, value: Record<string, unknown>, phoneNumberId = CLIENT) =>
+const envelope = (phoneNumberId: string, field: string, value: Record<string, unknown>) =>
   JSON.stringify({
     object: "whatsapp_business_account",
-    entry: [{ id: "waba", changes: [{ field, value: { metadata: { phone_number_id: phoneNumberId }, ...value } }] }],
+    entry: [{ id: "waba", changes: [{ field, value: { messaging_product: "whatsapp", metadata: { phone_number_id: phoneNumberId }, ...value } }] }],
   });
 
-const unix = () => String(Math.floor(Date.now() / 1000));
-
 describe.skipIf(!url)("lead flow", () => {
-  it("contacts, stops on reply, hands over to a person and records the outcome", async () => {
-    const db = createDb(url);
-    const wa = fakeWhatsApp();
-    const ctx = { db, whatsapp: wa.client, toolPhoneNumberId: TOOL };
-    const pending = async (leadId: string) =>
-      (
-        await db
-          .select({ kind: scheduledActions.kind })
-          .from(scheduledActions)
-          .where(and(eq(scheduledActions.leadId, leadId), eq(scheduledActions.status, "pending")))
-      ).map((r) => r.kind).sort();
+  const db = createDb(url);
+  const wa = fakeWhatsApp();
+  const ctx = { db, whatsapp: wa.client, toolPhoneNumberId: TOOL };
 
-    // Setup: one operation with two sellers and a manager.
-    const [agency] = await db.insert(agencies).values({ name: "Agency" }).returning();
+  async function setup(name: string, cadence: Partial<typeof operations.$inferInsert.cadence> = {}) {
+    const pn = `pn-${name}-${stamp}`;
+    const [agency] = await db.insert(agencies).values({ name: `Agência ${name}` }).returning();
     const [operation] = await db
       .insert(operations)
       .values({
         agencyId: agency!.id,
-        name: "Client",
-        phoneNumberId: CLIENT,
+        name,
+        phoneNumberId: pn,
         firstResponseMinutes: 5,
         staleDays: 3,
         cadence: {
-          firstContactTemplate: "first_contact",
-          followUps: [
-            { afterMinutes: 60, template: "follow_up_1" },
-            { afterMinutes: 1440, template: "follow_up_2" },
-          ],
+          firstReplyMessage: "Oi! Recebemos sua mensagem, já já alguém te responde por aqui.",
+          followUps: [{ afterMinutes: 60, template: "follow_up_1" }],
+          reengagementTemplate: "reengage_1",
+          ...cadence,
         },
       })
       .returning();
-    const opId = operation!.id;
+    return { pn, opId: operation!.id };
+  }
+
+  const deliver = async (pn: string, field: string, value: Record<string, unknown>) => {
+    await storeWebhook(db, "whatsapp", envelope(pn, field, value));
+    await processPendingWebhooks(db, { toolPhoneNumberId: TOOL });
+  };
+  const leadWrites = (pn: string, from: string, body: string, extra: Record<string, unknown> = {}) =>
+    deliver(pn, "messages", {
+      contacts: [{ wa_id: from, profile: { name: "Ana Souza" } }],
+      messages: [{ from, id: wamid("in"), timestamp: unix(), type: "text", text: { body }, ...extra }],
+    });
+  const tap = (personPhone: string, payload: string) =>
+    deliver(TOOL, "messages", { messages: [{ from: personPhone, id: wamid("btn"), timestamp: unix(), type: "button", button: { payload, text: "x" } }] });
+  const pending = async (leadId: string) =>
+    (
+      await db
+        .select({ kind: scheduledActions.kind })
+        .from(scheduledActions)
+        .where(and(eq(scheduledActions.leadId, leadId), eq(scheduledActions.status, "pending")))
+    ).map((r) => r.kind).sort();
+  const makeDue = (leadId: string, kind: (typeof scheduledActions.$inferSelect)["kind"]) =>
+    db
+      .update(scheduledActions)
+      .set({ runAt: sql`now() - interval '1 minute'` })
+      .where(and(eq(scheduledActions.leadId, leadId), eq(scheduledActions.kind, kind), eq(scheduledActions.status, "pending")));
+
+  it("answers a lead from an ad, hands over to a person, resumes a stalled chat and records the sale", async () => {
+    const { pn, opId } = await setup("ads");
     await db.insert(people).values([
       { operationId: opId, name: "Bia", whatsappNumber: "5577911110001", role: "seller" },
-      { operationId: opId, name: "Caio", whatsappNumber: "5577911110002", role: "seller" },
       { operationId: opId, name: "Gestor", whatsappNumber: "5577911110003", role: "manager" },
     ]);
+    const phone = "5577981110001";
 
-    // 1. A form lead with consent.
-    const created = await createLead(db, {
-      operationId: opId,
-      contactName: "Ana Souza",
-      phone: "(77) 99876-5432",
-      source: "form",
-      whatsappConsent: true,
+    // 1. The lead writes after tapping an ad.
+    await leadWrites(pn, phone, "Oi, quero saber o preço", {
+      referral: { source_id: "ad-1", source_type: "ad", source_url: "https://fb.me/x", headline: "Clareamento", ctwa_clid: "clid-1" },
     });
-    expect(created.status).toBe("created");
-    const leadId = (created as { leadId: string }).leadId;
-    expect(await pending(leadId)).toEqual(["first_contact", "notify_owner_new_lead"]);
+    const [lead] = await db.select().from(leads).where(eq(leads.operationId, opId));
+    expect(lead).toMatchObject({ source: "whatsapp_ad", campaign: "Clareamento", ad: "ad-1", ctwaClid: "clid-1", knownContact: false });
+    const leadId = lead!.id;
+    expect(await pending(leadId)).toEqual(["first_contact", "manager_alert", "notify_owner_new_lead", "owner_reminder"]);
 
-    // The same phone again is a duplicate, not a second lead.
-    expect((await createLead(db, { operationId: opId, phone: "77998765432", source: "form", whatsappConsent: true })).status).toBe("duplicate");
-
-    // 2. The worker sends the first contact and the owner notification.
+    // 2. Free-text first reply from the client's number; the seller is told, with "Não é lead".
     await runDueActions(ctx);
-    expect(wa.sent.map((s) => s.template).sort()).toEqual(["first_contact", "notify_new_lead"]);
-    expect(wa.sent.find((s) => s.template === "first_contact")).toMatchObject({ phoneNumberId: CLIENT, to: "5577998765432", bodyParams: ["Ana"] });
-    expect(wa.sent.find((s) => s.template === "notify_new_lead")?.phoneNumberId).toBe(TOOL);
-    expect(await pending(leadId)).toEqual(["follow_up", "follow_up"]);
-
-    // 3. The lead replies; WhatsApp reports the number without the ninth digit.
-    await storeWebhook(db, "whatsapp", webhook("messages", {
-      contacts: [{ wa_id: "557798765432", profile: { name: "Ana" } }],
-      messages: [{ from: "557798765432", id: `wamid.in.${Date.now()}`, timestamp: unix(), type: "text", text: { body: "Oi, quero saber o preço" } }],
-    }));
-    await processPendingWebhooks(db, { toolPhoneNumberId: TOOL });
-    let [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
-    expect(lead?.stage).toBe("in_progress");
-    expect(await pending(leadId)).toEqual(["manager_alert", "notify_owner_reply", "owner_reminder", "stale_check"]);
-
-    // A redelivered webhook is ignored.
-    const again = webhook("messages", { messages: [{ from: "557798765432", id: "wamid.dup", timestamp: "1", type: "text", text: { body: "x" } }] });
-    expect(await storeWebhook(db, "whatsapp", again)).toBe(true);
-    expect(await storeWebhook(db, "whatsapp", again)).toBe(false);
-
-    // 4. A seller answers from the WhatsApp Business app: reminders and alerts stop.
-    await storeWebhook(db, "whatsapp", webhook("smb_message_echoes", {
-      message_echoes: [{ from: CLIENT, to: "557798765432", id: `wamid.echo.${Date.now()}`, timestamp: unix(), type: "text", text: { body: "Olá Ana!" } }],
-    }));
-    await processPendingWebhooks(db, { toolPhoneNumberId: TOOL });
-    expect(await pending(leadId)).toEqual(["notify_owner_reply", "stale_check"]);
-
-    // 5. Y days pass without messages: the owner is asked for the outcome.
-    await db.update(scheduledActions).set({ runAt: sql`now() - interval '1 minute'` })
-      .where(and(eq(scheduledActions.leadId, leadId), eq(scheduledActions.kind, "stale_check")));
-    wa.sent.length = 0;
-    await runDueActions(ctx);
-    const ask = wa.sent.find((s) => s.template === "ask_lead_outcome");
-    expect(ask?.quickReplyPayloads?.map((b) => b.payload)).toEqual([
-      outcomePayload("won", leadId),
-      outcomePayload("lost", leadId),
-      outcomePayload("open", leadId),
+    expect(wa.texts.filter((t) => t.to === phone)).toEqual([
+      { phoneNumberId: pn, to: phone, body: "Oi! Recebemos sua mensagem, já já alguém te responde por aqui." },
     ]);
+    const notice = wa.templates.find((t) => t.template === "notify_new_lead" && t.to === "5577911110001");
+    expect(notice).toMatchObject({ phoneNumberId: TOOL, bodyParams: ["Ana", phone, "anúncio Clareamento"] });
+    expect(notice?.quickReplyPayloads).toEqual([{ index: 0, payload: buttonPayload("not_lead", leadId) }]);
+    expect(await pending(leadId)).toEqual(["follow_up", "manager_alert", "owner_reminder"]);
 
-    // 6. The owner taps "Ganhou" in the tool's chat.
-    await storeWebhook(db, "whatsapp", webhook("messages", {
-      messages: [{ from: ask!.to, id: `wamid.btn.${Date.now()}`, timestamp: unix(), type: "button", button: { payload: outcomePayload("won", leadId), text: "Ganhou" } }],
-    }, TOOL));
+    // 3. Bia answers from the app: reminders and follow-ups stop; only the stall check stays.
+    await deliver(pn, "smb_message_echoes", { message_echoes: [{ from: pn, to: phone, id: wamid("echo"), timestamp: unix(), type: "text", text: { body: "Olá Ana!" } }] });
+    expect(await pending(leadId)).toEqual(["stale_check"]);
+
+    // 4. Y days of silence: Bia is warned, with Cancelar / Ganhou / Perdeu, and Bia cancels.
+    await makeDue(leadId, "stale_check");
+    await runDueActions(ctx);
+    const warn = () => wa.templates.filter((t) => t.template === "notify_reengagement" && t.to === "5577911110001");
+    expect(warn()).toHaveLength(1);
+    expect(warn()[0]?.quickReplyPayloads?.map((b) => b.payload)).toEqual([
+      buttonPayload("cancel_reengagement", leadId),
+      buttonPayload("won", leadId),
+      buttonPayload("lost", leadId),
+    ]);
+    expect(await pending(leadId)).toEqual(["reengagement"]);
+    await tap("5577911110001", buttonPayload("cancel_reengagement", leadId));
+    expect(await pending(leadId)).toEqual(["stale_check"]);
+
+    // 5. Still silent later: warned again, nobody cancels, the tool resumes the lead itself.
+    await makeDue(leadId, "stale_check");
+    await runDueActions(ctx);
+    await makeDue(leadId, "reengagement");
+    await runDueActions(ctx);
+    expect(wa.templates.filter((t) => t.template === "reengage_1" && t.to === phone)).toHaveLength(1);
+    const [resumed] = await db.select().from(leads).where(eq(leads.id, leadId));
+    expect(resumed?.reengagements).toBe(1);
+    expect(await pending(leadId)).toEqual(["stale_check"]);
+
+    // 6. Bia taps "Ganhou", is asked the value, and answers it.
+    await tap("5577911110001", buttonPayload("won", leadId));
+    expect(await pending(leadId)).toEqual(["ask_sale_value"]);
+    await runDueActions(ctx);
+    expect(wa.texts.find((t) => t.to === "5577911110001")).toMatchObject({ phoneNumberId: TOOL });
+    await deliver(TOOL, "messages", { messages: [{ from: "5577911110001", id: wamid("val"), timestamp: unix(), type: "text", text: { body: "R$ 1.500,00" } }] });
+    const [won] = await db.select().from(leads).where(eq(leads.id, leadId));
+    expect(won).toMatchObject({ stage: "won", saleValueCents: 150000 });
+  }, 30_000);
+
+  it("keeps known contacts out, lets ads in, and stops for good on Não é lead", async () => {
+    const { pn, opId } = await setup("contacts");
+    await db.insert(people).values({ operationId: opId, name: "Dono", whatsappNumber: "5577911119999", role: "seller" });
+    const fromHistory = "5577982220001";
+    const inAddressBook = "5577982220002";
+    const clientStarted = "5577982220003";
+    const stranger = "5577982220004";
+
+    // Activation: 180 days of history (no text kept) and the app's address book.
+    await deliver(pn, "history", {
+      history: [{
+        metadata: { phase: 0, chunk_order: 1, progress: 100 },
+        threads: [{ id: fromHistory, messages: [
+          { from: fromHistory, id: wamid("h"), timestamp: unix(-86400 * 30), type: "text", text: { body: "segredo" } },
+          { from: "5577933330000", to: fromHistory, id: wamid("h"), timestamp: unix(-86400 * 30 + 60), type: "text", text: { body: "resposta" } },
+        ] }],
+      }],
+    });
+    await deliver(pn, "smb_app_state_sync", { state_sync: [{ type: "contact", contact: { full_name: "Fornecedor", phone_number: inAddressBook }, action: "add" }] });
+    // After activation, the client starts a chat from the app.
+    await deliver(pn, "smb_message_echoes", { message_echoes: [{ from: pn, to: clientStarted, id: wamid("echo"), timestamp: unix(), type: "text", text: { body: "Oi, tudo bem?" } }] });
+
+    const history = await db.select().from(historyMessages).where(eq(historyMessages.operationId, opId));
+    expect(history.map((h) => h.direction).sort()).toEqual(["inbound", "outbound"]);
+    expect(JSON.stringify(history)).not.toContain("segredo");
+
+    // None of them becomes a lead when they write.
+    for (const phone of [fromHistory, inAddressBook, clientStarted]) await leadWrites(pn, phone, "Oi");
+    expect(await db.select().from(leads).where(eq(leads.operationId, opId))).toHaveLength(0);
+
+    // A known contact who comes from an ad is a lead, flagged as already known.
+    await leadWrites(pn, fromHistory, "Vi o anúncio", { referral: { source_id: "ad-9", source_type: "ad", headline: "Promoção" } });
+    const [adLead] = await db.select().from(leads).where(eq(leads.operationId, opId));
+    expect(adLead).toMatchObject({ source: "whatsapp_ad", knownContact: true });
+
+    // A stranger becomes a lead of unknown origin; the owner taps "Não é lead".
+    await leadWrites(pn, stranger, "Bom dia");
+    const [strangerLead] = await db.select().from(leads).where(and(eq(leads.operationId, opId), eq(leads.contactPhone, stranger)));
+    expect(strangerLead?.source).toBe("whatsapp");
+    await tap("5577911119999", buttonPayload("not_lead", strangerLead!.id));
+    expect(await db.select().from(leads).where(eq(leads.id, strangerLead!.id))).toHaveLength(0);
+    const [ignored] = await db.select().from(contacts).where(and(eq(contacts.operationId, opId), eq(contacts.phone, stranger)));
+    expect(ignored?.ignoredAt).not.toBeNull();
+
+    // Writing again, even from an ad, changes nothing.
+    await leadWrites(pn, stranger, "Oi de novo", { referral: { source_id: "ad-9", source_type: "ad" } });
+    expect(await db.select().from(leads).where(and(eq(leads.operationId, opId), eq(leads.contactPhone, stranger)))).toHaveLength(0);
+
+    // A business that declines to share history is recorded, not an error.
+    await storeWebhook(db, "whatsapp", JSON.stringify({ messaging_product: "whatsapp", metadata: { phone_number_id: pn }, history: [{ errors: [{ code: 2593109 }] }] }));
     await processPendingWebhooks(db, { toolPhoneNumberId: TOOL });
-    [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
-    expect(lead?.stage).toBe("won");
-    expect(await pending(leadId)).toEqual([]);
+    const declined = await db.select().from(events).where(and(eq(events.operationId, opId), eq(events.type, "history_declined")));
+    expect(declined).toHaveLength(1);
   }, 30_000);
 
-  it("marks a lead that never answers as no_reply after the cadence", async () => {
-    const db = createDb(url);
-    const wa = fakeWhatsApp();
-    const ctx = { db, whatsapp: wa.client, toolPhoneNumberId: TOOL };
-    const [agency] = await db.insert(agencies).values({ name: "Agency 2" }).returning();
-    const [operation] = await db.insert(operations).values({
-      agencyId: agency!.id,
-      name: "Solo client",
-      mode: "solo",
-      phoneNumberId: `${CLIENT}-solo`,
-      cadence: { firstContactTemplate: "first_contact", followUps: [{ afterMinutes: 60, template: "follow_up_1" }] },
-    }).returning();
-    await db.insert(people).values({ operationId: operation!.id, name: "Dono", whatsappNumber: "5577911119999", role: "manager" });
+  it("follows up a lead who goes quiet after the first reply, then closes it as no_reply", async () => {
+    const { pn, opId } = await setup("quiet");
+    await db.insert(people).values({ operationId: opId, name: "Bia", whatsappNumber: "5577911117777", role: "seller" });
+    const phone = "5577984440001";
 
-    const created = await createLead(db, { operationId: operation!.id, phone: "77991234567", source: "form", whatsappConsent: true });
-    const leadId = (created as { leadId: string }).leadId;
-    const [lead] = await db.select().from(leads).where(eq(leads.id, leadId));
-    expect(lead?.ownerPersonId).not.toBeNull(); // Solo mode: the owner gets the lead whatever the role.
+    await leadWrites(pn, phone, "Oi");
+    const [lead] = await db.select().from(leads).where(eq(leads.operationId, opId));
+    await runDueActions(ctx); // first reply
+    await makeDue(lead!.id, "follow_up");
+    await runDueActions(ctx); // last follow-up schedules the stall check
+    await makeDue(lead!.id, "stale_check");
+    await runDueActions(ctx);
 
-    const due = sql`now() - interval '1 minute'`;
-    await runDueActions(ctx); // first contact
-    await db.update(scheduledActions).set({ runAt: due }).where(eq(scheduledActions.leadId, leadId));
-    await runDueActions(ctx); // last follow-up, schedules the stale check
-    await db.update(scheduledActions).set({ runAt: due }).where(and(eq(scheduledActions.leadId, leadId), eq(scheduledActions.status, "pending")));
-    await runDueActions(ctx); // stale check
-
-    const [after] = await db.select().from(leads).where(eq(leads.id, leadId));
+    const [after] = await db.select().from(leads).where(eq(leads.id, lead!.id));
     expect(after?.stage).toBe("no_reply");
-    // runDueActions is global, so keep only messages for this lead and its owner.
-    const mine = wa.sent.filter((s) => s.to === "5577991234567" || s.to === "5577911119999");
-    expect(mine.map((s) => s.template).sort()).toEqual(["first_contact", "follow_up_1", "notify_new_lead"]);
+    expect(wa.templates.filter((t) => t.to === phone).map((t) => t.template)).toEqual(["follow_up_1"]);
   }, 30_000);
 
-  it("does not send the first contact without consent", async () => {
-    const db = createDb(url);
-    const [agency] = await db.insert(agencies).values({ name: "Agency 3" }).returning();
-    const [operation] = await db.insert(operations).values({
-      agencyId: agency!.id,
-      name: "No consent",
-      cadence: { firstContactTemplate: "first_contact", followUps: [] },
-    }).returning();
-    const created = await createLead(db, { operationId: operation!.id, phone: "77990000000", source: "form", whatsappConsent: false });
-    const leadId = (created as { leadId: string }).leadId;
-    const kinds = await db.select({ kind: scheduledActions.kind }).from(scheduledActions).where(eq(scheduledActions.leadId, leadId));
-    expect(kinds.map((k) => k.kind)).not.toContain("first_contact");
-  });
+  it("keeps the first reply when the lead sends two messages in a row", async () => {
+    const { pn, opId } = await setup("double");
+    const phone = "5577985550001";
+    await leadWrites(pn, phone, "Oi");
+    await leadWrites(pn, phone, "Quero saber o preço");
+    const [lead] = await db.select().from(leads).where(eq(leads.operationId, opId));
+    expect(await pending(lead!.id)).toContain("first_contact");
+    await runDueActions(ctx);
+    expect(wa.texts.filter((t) => t.to === phone)).toHaveLength(1);
+  }, 30_000);
 });
-

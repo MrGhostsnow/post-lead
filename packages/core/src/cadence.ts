@@ -13,11 +13,10 @@ export type FollowUpStep = {
 };
 
 export type CadenceConfig = {
-  firstContactTemplate: string;
   followUps: FollowUpStep[];
   /** X: minutes the business has to answer a lead that replied. */
   firstResponseMinutes: number;
-  /** Y: days without any message before asking the owner for the outcome. */
+  /** Y: days without any message before the conversation counts as stalled. */
   staleDays: number;
 };
 
@@ -30,7 +29,7 @@ export type PlannedAction =
 const minutes = (n: number) => n * 60 * 1000;
 const days = (n: number) => n * 24 * 60 * 60 * 1000;
 
-/** Follow-ups scheduled right after the first automatic contact. */
+/** Follow-ups scheduled right after the automatic first reply. */
 export function planFollowUps(firstContactAt: Date, config: CadenceConfig): PlannedAction[] {
   return config.followUps.map((step, index) => ({
     kind: "follow_up" as const,

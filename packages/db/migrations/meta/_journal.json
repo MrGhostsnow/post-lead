@@ -29,6 +29,13 @@
       "when": 1795486628872,
       "tag": "0003_client_link",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1795562682924,
+      "tag": "0004_whatsapp_only_intake",
+      "breakpoints": true
     }
   ]
 }

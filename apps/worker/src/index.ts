@@ -1,10 +1,10 @@
 /**
  * Long-running process: applies stored webhooks and runs scheduled actions
- * (first contact, follow-ups, reminders, alerts, weekly reports). Run exactly
+ * (first reply, follow-ups, reminders, alerts, resumptions, weekly reports). Run exactly
  * one instance in the MVP; claiming uses SKIP LOCKED, but there is no lease
  * for crashed jobs other than recoverStuckActions at startup.
  */
-import { createMetaLeadsClient, createWhatsAppClient } from "@post-lead/core";
+import { createWhatsAppClient } from "@post-lead/core";
 import { createDb } from "@post-lead/db";
 import {
   ensureWeeklyReportsScheduled,
@@ -25,10 +25,6 @@ const whatsapp = createWhatsAppClient({ accessToken: required("META_ACCESS_TOKEN
 const toolPhoneNumberId = required("TOOL_PHONE_NUMBER_ID");
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000);
 
-// Optional until Lead Ads is connected; without it, leadgen webhooks wait and retry.
-const leadsToken = process.env.META_LEADS_ACCESS_TOKEN;
-const leadsClient = leadsToken ? createMetaLeadsClient({ accessToken: leadsToken, apiVersion }) : undefined;
-
 const HOUR_MS = 60 * 60 * 1000;
 let lastReportCheck = 0;
 
@@ -45,7 +41,7 @@ async function tick() {
     lastReportCheck = Date.now();
   }
 
-  const webhooks = await processPendingWebhooks(db, { toolPhoneNumberId, leadsClient });
+  const webhooks = await processPendingWebhooks(db, { toolPhoneNumberId });
   const actions = await runDueActions({ db, whatsapp, toolPhoneNumberId });
   if (webhooks || actions) {
     console.log(`[worker] webhooks=${webhooks} actions=${actions}`);
@@ -54,7 +50,7 @@ async function tick() {
 
 async function main() {
   await recoverStuckActions(db);
-  console.log(`[worker] started${leadsClient ? "" : " (Lead Ads disabled: META_LEADS_ACCESS_TOKEN not set)"}`);
+  console.log("[worker] started");
 
   while (running) {
     try {

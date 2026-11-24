@@ -6,7 +6,19 @@
  * - "messages": messages from leads, and delivery statuses of what we sent.
  * - "smb_message_echoes": messages the business sent from the WhatsApp Business
  *   app (coexistence). This is how we know a person answered the lead.
+ * - "history": the 180 days of chats Meta shares once at activation. Only who,
+ *   when and which direction are kept, never the text.
+ * - "smb_app_state_sync": contacts in the app's address book, and later changes.
  */
+
+/** Present when the lead wrote after tapping a click-to-WhatsApp ad. */
+export type AdReferral = {
+  sourceId: string | null;
+  sourceType: string | null;
+  sourceUrl: string | null;
+  headline: string | null;
+  ctwaClid: string | null;
+};
 
 export type InboundMessageEvent = {
   kind: "inbound_message";
@@ -19,6 +31,7 @@ export type InboundMessageEvent = {
   text: string | null;
   /** Id of a tapped quick-reply or interactive button, when there is one. */
   buttonPayload: string | null;
+  referral: AdReferral | null;
 };
 
 export type BusinessEchoEvent = {
@@ -40,7 +53,21 @@ export type StatusEvent = {
   timestamp: Date;
 };
 
-export type NormalizedEvent = InboundMessageEvent | BusinessEchoEvent | StatusEvent;
+export type HistoryEvent = {
+  kind: "history";
+  phoneNumberId: string;
+  /** False when the business declined to share its history. */
+  shared: boolean;
+  messages: { contactPhone: string; waMessageId: string; direction: "inbound" | "outbound"; timestamp: Date }[];
+};
+
+export type ContactSyncEvent = {
+  kind: "contact_sync";
+  phoneNumberId: string;
+  contacts: { phone: string; name: string | null; action: "add" | "remove" }[];
+};
+
+export type NormalizedEvent = InboundMessageEvent | BusinessEchoEvent | StatusEvent | HistoryEvent | ContactSyncEvent;
 
 type RawMessage = {
   from?: string;
@@ -54,6 +81,24 @@ type RawMessage = {
     button_reply?: { id?: string; title?: string };
     list_reply?: { id?: string; title?: string };
   };
+  referral?: {
+    source_id?: string;
+    source_type?: string;
+    source_url?: string;
+    headline?: string;
+    ctwa_clid?: string;
+  };
+};
+
+type RawHistoryChunk = {
+  threads?: { id?: string; messages?: RawMessage[] }[];
+  errors?: { code?: number }[];
+};
+
+type RawStateSync = {
+  type?: string;
+  contact?: { full_name?: string; first_name?: string; phone_number?: string };
+  action?: string;
 };
 
 type RawValue = {
@@ -62,6 +107,8 @@ type RawValue = {
   messages?: RawMessage[];
   message_echoes?: RawMessage[];
   statuses?: { id?: string; status?: string; timestamp?: string; recipient_id?: string }[];
+  history?: RawHistoryChunk[];
+  state_sync?: RawStateSync[];
 };
 
 type RawPayload = {
@@ -91,7 +138,46 @@ function buttonPayloadOf(message: RawMessage): string | null {
   );
 }
 
+function referralOf(message: RawMessage): AdReferral | null {
+  const r = message.referral;
+  if (!r) return null;
+  return {
+    sourceId: r.source_id ?? null,
+    sourceType: r.source_type ?? null,
+    sourceUrl: r.source_url ?? null,
+    headline: r.headline ?? null,
+    ctwaClid: r.ctwa_clid ?? null,
+  };
+}
+
+function historyEvent(phoneNumberId: string, chunks: RawHistoryChunk[]): HistoryEvent {
+  const declined = chunks.some((c) => c.errors?.length);
+  const out: HistoryEvent["messages"] = [];
+  for (const chunk of chunks) {
+    for (const thread of chunk.threads ?? []) {
+      // The thread id is the other person's number; a message "from" them is inbound.
+      if (!thread.id) continue;
+      for (const message of thread.messages ?? []) {
+        if (!message.id || !message.timestamp) continue;
+        out.push({
+          contactPhone: thread.id,
+          waMessageId: message.id,
+          direction: message.from === thread.id ? "inbound" : "outbound",
+          timestamp: toDate(message.timestamp),
+        });
+      }
+    }
+  }
+  return { kind: "history", phoneNumberId, shared: !declined, messages: out };
+}
+
 export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
+  // A declined history share arrives without the usual envelope.
+  const bare = payload as RawValue & { messaging_product?: string };
+  if (!(payload as RawPayload)?.object && bare?.history && bare.metadata?.phone_number_id) {
+    return [historyEvent(bare.metadata.phone_number_id, bare.history)];
+  }
+
   const body = payload as RawPayload;
   if (body?.object !== "whatsapp_business_account") return [];
 
@@ -117,6 +203,7 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
             type: message.type ?? "unknown",
             text: textOf(message),
             buttonPayload: buttonPayloadOf(message),
+            referral: referralOf(message),
           });
         }
         for (const status of value.statuses ?? []) {
@@ -130,6 +217,24 @@ export function parseWhatsAppWebhook(payload: unknown): NormalizedEvent[] {
             timestamp: toDate(status.timestamp),
           });
         }
+      }
+
+      if (change.field === "history") {
+        events.push(historyEvent(phoneNumberId, value.history ?? []));
+      }
+
+      if (change.field === "smb_app_state_sync") {
+        const synced: ContactSyncEvent["contacts"] = [];
+        for (const item of value.state_sync ?? []) {
+          const phone = item.contact?.phone_number;
+          if (item.type !== "contact" || !phone) continue;
+          synced.push({
+            phone,
+            name: item.contact?.full_name ?? item.contact?.first_name ?? null,
+            action: item.action === "remove" ? "remove" : "add",
+          });
+        }
+        events.push({ kind: "contact_sync", phoneNumberId, contacts: synced });
       }
 
       if (change.field === "smb_message_echoes") {

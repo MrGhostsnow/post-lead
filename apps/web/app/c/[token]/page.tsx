@@ -45,7 +45,7 @@ export default async function ClientView({ params }: { params: Promise<{ token: 
           <b>{week.medianBusinessResponseMinutes === null ? "–" : `${week.medianBusinessResponseMinutes} min`}</b>
           <span>tempo da sua equipe para responder</span>
         </div>
-        <div className="stat"><b>{week.repliedWithoutBusinessAnswer}</b><span>responderam e ficaram sem retorno</span></div>
+        <div className="stat"><b>{week.repliedWithoutBusinessAnswer}</b><span>escreveram e ficaram sem resposta</span></div>
       </div>
 
       <section className="card" style={{ marginBottom: 16 }}>

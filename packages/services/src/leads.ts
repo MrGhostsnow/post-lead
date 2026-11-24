@@ -1,4 +1,4 @@
-import { brazilPhoneVariants, normalizeBrazilPhone, pickNextOwner } from "@post-lead/core";
+import { brazilPhoneVariants, nextOpening, normalizeBrazilPhone, pickNextOwner } from "@post-lead/core";
 import { and, eq, events, inArray, leads, operations, people, type Database } from "@post-lead/db";
 import { schedule, type DbOrTx } from "./scheduling";
 
@@ -14,6 +14,10 @@ export type NewLeadInput = {
   ad?: string | null;
   utm?: Record<string, string> | null;
   whatsappConsent: boolean;
+  ctwaClid?: string | null;
+  knownContact?: boolean;
+  /** When the lead wrote; defaults to now. Response times are measured from here. */
+  receivedAt?: Date;
 };
 
 export type NewLeadResult =
@@ -31,9 +35,9 @@ export async function findLeadByPhone(db: DbOrTx, operationId: string, phone: st
 }
 
 /**
- * Creates a lead, assigns an owner by rotation, and schedules the first
- * automatic contact. A lead that writes first (source "whatsapp") gets no
- * first contact: it already started the conversation.
+ * Creates a lead, assigns an owner by rotation, tells the owner and schedules
+ * the automatic first reply. Every lead writes first, so the reply is free
+ * text inside the 24-hour window.
  */
 export async function createLead(db: Database, input: NewLeadInput): Promise<NewLeadResult> {
   const phone = normalizeBrazilPhone(input.phone);
@@ -77,20 +81,24 @@ export async function createLead(db: Database, input: NewLeadInput): Promise<New
         campaign: input.campaign ?? null,
         ad: input.ad ?? null,
         utm: input.utm ?? null,
+        ctwaClid: input.ctwaClid ?? null,
+        knownContact: input.knownContact ?? false,
         whatsappConsent: input.whatsappConsent,
         consentAt: input.whatsappConsent ? now : null,
         ownerPersonId: ownerId,
-        receivedAt: now,
+        receivedAt: input.receivedAt ?? now,
       })
       .returning({ id: leads.id });
     if (!lead) throw new Error("Lead insert returned no row");
 
     if (ownerId) {
       await tx.update(people).set({ lastAssignedAt: now }).where(eq(people.id, ownerId));
-      await schedule(tx, { operationId: operation.id, leadId: lead.id, kind: "notify_owner_new_lead", runAt: now });
+      // Nobody is woken up at night: the notice waits for the next opening.
+      const notifyAt = (operation.businessHours && nextOpening(now, operation.businessHours)) || now;
+      await schedule(tx, { operationId: operation.id, leadId: lead.id, kind: "notify_owner_new_lead", runAt: notifyAt });
     }
 
-    if (input.source !== "whatsapp" && input.whatsappConsent) {
+    if (input.whatsappConsent) {
       await schedule(tx, { operationId: operation.id, leadId: lead.id, kind: "first_contact", runAt: now });
     }
 

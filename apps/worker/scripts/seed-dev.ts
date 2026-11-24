@@ -1,13 +1,15 @@
 /**
- * Creates one agency, one operation and one seller for local development,
- * and prints the intake URL and key. Usage (from the repo root):
+ * Creates one agency, one operation and one seller for local development.
+ * Usage (from the repo root):
  *
  *   npm run seed:dev -w @post-lead/worker -- --phone-number-id 123 --seller 5577999998888
  *
  * --phone-number-id: Cloud API phone number id (the test number works).
  * --seller: WhatsApp number that receives the notifications, digits only.
+ *
+ * Then write to the test number from any phone: the first message creates the
+ * lead and the tool answers with the first reply below.
  */
-import { createHash, randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
 import { agencies, createDb, operations, people } from "@post-lead/db";
 
@@ -25,7 +27,6 @@ if (!values["phone-number-id"] || !values.seller) {
 }
 
 const db = createDb();
-const intakeKey = randomBytes(24).toString("base64url");
 
 const [agency] = await db.insert(agencies).values({ name: "Agência de teste" }).returning();
 const [operation] = await db
@@ -35,16 +36,16 @@ const [operation] = await db
     name: values.name!,
     mode: "team",
     phoneNumberId: values["phone-number-id"],
-    intakeKeyHash: createHash("sha256").update(intakeKey).digest("hex"),
     firstResponseMinutes: 5,
     staleDays: 3,
     cadence: {
+      firstReplyMessage: "Oi! Recebemos sua mensagem, já já alguém te responde por aqui.",
       // The Cloud API test number ships with an approved "hello_world"
       // template, in English and without variables.
-      firstContactTemplate: "hello_world",
       languageCode: "en_US",
       firstNameParam: false,
-      followUps: [],
+      followUps: [{ afterMinutes: 60, template: "hello_world" }],
+      reengagementTemplate: "hello_world",
     },
   })
   .returning();
@@ -56,6 +57,4 @@ await db.insert(people).values({
 });
 
 console.log(`operation id: ${operation!.id}`);
-console.log(`intake URL:   /api/intake/${operation!.id}`);
-console.log(`intake key:   ${intakeKey}  (shown once; only its hash is stored)`);
 process.exit(0);

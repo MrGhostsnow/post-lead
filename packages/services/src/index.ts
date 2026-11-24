@@ -3,4 +3,4 @@ export * from "./webhooks";
 export * from "./actions";
 export * from "./notifications";
 export * from "./scheduling";
-export * from "./leadAds";
+export * from "./team";

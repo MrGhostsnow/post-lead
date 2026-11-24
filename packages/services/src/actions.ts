@@ -1,6 +1,8 @@
 import {
   canSendFreeform,
   computeWeeklyReport,
+  isWithinBusinessHours,
+  nextOpening,
   nextWeeklyReportAt,
   planFollowUps,
   planStaleCheck,
@@ -20,12 +22,16 @@ import {
   sql,
   type Database,
 } from "@post-lead/db";
-import { NOTIFICATION_TEMPLATES, outcomePayload } from "./notifications";
+import { buttonPayload, NOTIFICATION_TEMPLATES } from "./notifications";
 import { schedule } from "./scheduling";
 import { operationCadence } from "./webhooks";
 
 const MAX_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 60_000;
+/** Each resumption is a paid marketing template; Meta also caps how many a person receives. */
+export const MAX_REENGAGEMENTS = 2;
+/** Time the owner has to tap "Cancelar" before a stalled lead is resumed. */
+export const REENGAGEMENT_NOTICE_MS = 2 * 60 * 60 * 1000;
 
 type Action = typeof scheduledActions.$inferSelect;
 type Lead = typeof leads.$inferSelect;
@@ -118,11 +124,13 @@ async function execute(ctx: ActionContext, action: Action) {
     case "follow_up":
       return followUp(ctx, lead, operation, action);
     case "notify_owner_new_lead":
-      return notifyOwner(ctx, lead, NOTIFICATION_TEMPLATES.newLead, [
-        firstName(lead),
-        lead.contactPhone,
-        sourceLabel(lead.source),
-      ]);
+      return notifyOwner(
+        ctx,
+        lead,
+        NOTIFICATION_TEMPLATES.newLead,
+        [firstName(lead), lead.contactPhone, originLabel(lead)],
+        [{ index: 0, payload: buttonPayload("not_lead", lead.id) }],
+      );
     case "notify_owner_reply":
       return notifyOwner(ctx, lead, NOTIFICATION_TEMPLATES.leadReplied, [firstName(lead)]);
     case "owner_reminder":
@@ -138,6 +146,10 @@ async function execute(ctx: ActionContext, action: Action) {
       return staleCheck(ctx, lead, operation);
     case "out_of_hours_reply":
       return outOfHoursReply(ctx, lead, operation);
+    case "reengagement":
+      return reengage(ctx, lead, operation, action);
+    case "ask_sale_value":
+      return askSaleValue(ctx, lead, action);
   }
 }
 
@@ -147,8 +159,17 @@ function firstName(lead: Lead) {
   return lead.contactName?.trim().split(/\s+/)[0] || "tudo bem";
 }
 
-function sourceLabel(source: Lead["source"]) {
-  return { form: "formulário", meta_lead_ads: "anúncio", whatsapp: "WhatsApp" }[source];
+function originLabel(lead: Lead) {
+  if (lead.source === "whatsapp_ad") {
+    const ad = lead.campaign ? `anúncio ${lead.campaign}` : "anúncio";
+    return lead.knownContact ? `${ad} (já era contato)` : ad;
+  }
+  return "origem não identificada";
+}
+
+/** The lead wrote again after the automatic first reply. */
+function leadWroteAfterFirstReply(lead: Lead) {
+  return Boolean(lead.lastInboundAt && lead.firstContactAt && lead.lastInboundAt > lead.firstContactAt);
 }
 
 function answeredSince(lead: Lead, action: Action) {
@@ -178,23 +199,41 @@ async function recordOutbound(ctx: ActionContext, lead: Lead, waMessageId: strin
   return now;
 }
 
+/**
+ * Answers a new lead in seconds with free text. The lead wrote first, so this
+ * is inside the 24-hour window: no template, and it counts toward Meta's free
+ * service messages. Outside business hours the out-of-hours message goes
+ * instead, so the lead gets one message, not two.
+ */
 async function firstContact(ctx: ActionContext, lead: Lead, operation: Operation) {
-  // Skip if the lead already wrote, has no opt-in, or the client number is not connected yet.
-  if (lead.lastInboundAt || !lead.whatsappConsent || !operation.phoneNumberId || isClosed(lead)) return;
+  if (lead.firstContactAt || lead.lastBusinessReplyAt || !lead.whatsappConsent || !operation.phoneNumberId || isClosed(lead)) return;
+  const now = new Date();
+  if (!canSendFreeform(lead.lastInboundAt, now)) return;
 
-  const template = operation.cadence.firstContactTemplate;
-  const id = await ctx.whatsapp.sendTemplate({
-    phoneNumberId: operation.phoneNumberId,
-    to: lead.contactPhone,
-    template,
-    ...leadTemplateOptions(lead, operation),
+  const hours = operation.businessHours;
+  const closed = Boolean(hours && !isWithinBusinessHours(now, hours));
+  const outOfHours = closed && operation.cadence.outOfHoursMessage ? operation.cadence.outOfHoursMessage : null;
+  const text = outOfHours ?? operation.cadence.firstReplyMessage;
+  if (!text) return;
+
+  const id = await ctx.whatsapp.sendText(operation.phoneNumberId, lead.contactPhone, text);
+  await ctx.db.insert(messages).values({
+    operationId: lead.operationId,
+    leadId: lead.id,
+    waMessageId: id,
+    direction: "outbound",
+    sender: "automation",
+    type: "text",
+    body: text,
+    sentAt: now,
   });
-  const sentAt = await recordOutbound(ctx, lead, id, `template:${template}`);
-
-  await ctx.db.update(leads).set({ firstContactAt: sentAt, lastOutboundAt: sentAt, updatedAt: sentAt }).where(eq(leads.id, lead.id));
+  await ctx.db
+    .update(leads)
+    .set({ firstContactAt: now, lastOutboundAt: now, ...(outOfHours ? { lastOutOfHoursReplyAt: now } : {}), updatedAt: now })
+    .where(eq(leads.id, lead.id));
 
   const cadence = operationCadence(operation);
-  const steps = planFollowUps(sentAt, cadence);
+  const steps = planFollowUps(now, cadence);
   for (const step of steps) {
     await schedule(ctx.db, {
       operationId: operation.id,
@@ -206,14 +245,20 @@ async function firstContact(ctx: ActionContext, lead: Lead, operation: Operation
   }
   // No follow-ups configured: still close the loop after Y days.
   if (steps.length === 0) {
-    await schedule(ctx.db, { operationId: operation.id, leadId: lead.id, ...planStaleCheck(sentAt, cadence) });
+    await schedule(ctx.db, { operationId: operation.id, leadId: lead.id, ...planStaleCheck(now, cadence) });
   }
 
-  await ctx.db.insert(events).values({ operationId: operation.id, leadId: lead.id, type: "first_contact_sent", payload: { template } });
+  await ctx.db.insert(events).values({
+    operationId: operation.id,
+    leadId: lead.id,
+    type: "first_contact_sent",
+    payload: { outOfHours: Boolean(outOfHours) },
+  });
 }
 
 async function followUp(ctx: ActionContext, lead: Lead, operation: Operation, action: Action) {
-  if (lead.lastInboundAt || lead.lastBusinessReplyAt || isClosed(lead) || !operation.phoneNumberId) return;
+  // Follow-ups are for a lead who went quiet after the first reply, before anyone answered.
+  if (leadWroteAfterFirstReply(lead) || lead.lastBusinessReplyAt || isClosed(lead) || !lead.whatsappConsent || !operation.phoneNumberId) return;
 
   const template = String(action.payload.template ?? "");
   if (!template) throw new Error("follow_up without template");
@@ -240,12 +285,25 @@ async function followUp(ctx: ActionContext, lead: Lead, operation: Operation, ac
   });
 }
 
-async function notifyOwner(ctx: ActionContext, lead: Lead, template: string, bodyParams: string[]) {
-  if (!lead.ownerPersonId) return;
+async function notifyOwner(
+  ctx: ActionContext,
+  lead: Lead,
+  template: string,
+  bodyParams: string[],
+  quickReplyPayloads?: { index: number; payload: string }[],
+) {
+  if (!lead.ownerPersonId) return false;
   const [owner] = await ctx.db.select().from(people).where(eq(people.id, lead.ownerPersonId));
-  if (!owner?.active) return;
+  if (!owner?.active) return false;
 
-  await ctx.whatsapp.sendTemplate({ phoneNumberId: ctx.toolPhoneNumberId, to: owner.whatsappNumber, template, bodyParams });
+  await ctx.whatsapp.sendTemplate({
+    phoneNumberId: ctx.toolPhoneNumberId,
+    to: owner.whatsappNumber,
+    template,
+    bodyParams,
+    ...(quickReplyPayloads ? { quickReplyPayloads } : {}),
+  });
+  return true;
 }
 
 async function alertManagers(ctx: ActionContext, lead: Lead, operation: Operation) {
@@ -277,19 +335,98 @@ async function alertManagers(ctx: ActionContext, lead: Lead, operation: Operatio
   });
 }
 
+/**
+ * Runs Y days after the last message. Two cases:
+ * - The lead never engaged beyond its first message: close as "no_reply".
+ * - A conversation stalled midway: warn the owner, with a "Cancelar" button,
+ *   and resume the lead on its own if nobody cancels. After the last allowed
+ *   resumption, ask the owner for the outcome instead.
+ */
 async function staleCheck(ctx: ActionContext, lead: Lead, operation: Operation) {
   if (isClosed(lead)) return;
 
-  // Never answered the automatic contacts: close as "no_reply", send nothing else.
-  if (!lead.lastInboundAt) {
+  if (!leadWroteAfterFirstReply(lead) && !lead.lastBusinessReplyAt) {
     await ctx.db.update(leads).set({ stage: "no_reply", updatedAt: new Date() }).where(eq(leads.id, lead.id));
     await ctx.db.insert(events).values({ operationId: operation.id, leadId: lead.id, type: "marked_no_reply", payload: {} });
     return;
   }
 
-  // The conversation stalled: ask the owner for the outcome, one tap.
-  await askOutcome(ctx, lead);
-  await ctx.db.insert(events).values({ operationId: operation.id, leadId: lead.id, type: "outcome_requested", payload: {} });
+  const template = operation.cadence.reengagementTemplate;
+  const canResume = Boolean(template && operation.phoneNumberId && lead.whatsappConsent && lead.reengagements < MAX_REENGAGEMENTS);
+  if (!canResume) {
+    await askOutcome(ctx, lead);
+    await ctx.db.insert(events).values({ operationId: operation.id, leadId: lead.id, type: "outcome_requested", payload: {} });
+    return;
+  }
+
+  const earliest = new Date(Date.now() + REENGAGEMENT_NOTICE_MS);
+  const sendAt = (operation.businessHours && nextOpening(earliest, operation.businessHours)) || earliest;
+  await notifyOwner(
+    ctx,
+    lead,
+    NOTIFICATION_TEMPLATES.reengagementNotice,
+    [firstName(lead), String(operation.staleDays), formatWhen(sendAt, operation.businessHours?.timezone ?? DEFAULT_TIMEZONE)],
+    [
+      { index: 0, payload: buttonPayload("cancel_reengagement", lead.id) },
+      { index: 1, payload: buttonPayload("won", lead.id) },
+      { index: 2, payload: buttonPayload("lost", lead.id) },
+    ],
+  );
+  await schedule(ctx.db, { operationId: operation.id, leadId: lead.id, kind: "reengagement", runAt: sendAt });
+  await ctx.db.insert(events).values({
+    operationId: operation.id,
+    leadId: lead.id,
+    type: "reengagement_announced",
+    payload: { sendAt: sendAt.toISOString() },
+  });
+}
+
+function formatWhen(at: Date, timezone: string) {
+  const fmt = (d: Date) => new Intl.DateTimeFormat("pt-BR", { timeZone: timezone, dateStyle: "short" }).format(d);
+  const time = new Intl.DateTimeFormat("pt-BR", { timeZone: timezone, hour: "2-digit", minute: "2-digit" }).format(at);
+  const day = fmt(at) === fmt(new Date()) ? "hoje" : fmt(at) === fmt(new Date(Date.now() + 86_400_000)) ? "amanhã" : `em ${fmt(at)}`;
+  return `${day} às ${time}`;
+}
+
+/** Resumes a stalled lead, unless someone talked, cancelled or closed it since the notice. */
+async function reengage(ctx: ActionContext, lead: Lead, operation: Operation, action: Action) {
+  const template = operation.cadence.reengagementTemplate;
+  if (!template || !operation.phoneNumberId || !lead.whatsappConsent || isClosed(lead)) return;
+  const noticeAt = action.createdAt;
+  if ((lead.lastInboundAt && lead.lastInboundAt > noticeAt) || (lead.lastBusinessReplyAt && lead.lastBusinessReplyAt > noticeAt)) return;
+
+  const id = await ctx.whatsapp.sendTemplate({
+    phoneNumberId: operation.phoneNumberId,
+    to: lead.contactPhone,
+    template,
+    ...leadTemplateOptions(lead, operation),
+  });
+  const sentAt = await recordOutbound(ctx, lead, id, `template:${template}`);
+  await ctx.db
+    .update(leads)
+    .set({ lastOutboundAt: sentAt, reengagements: lead.reengagements + 1, updatedAt: sentAt })
+    .where(eq(leads.id, lead.id));
+  await schedule(ctx.db, { operationId: operation.id, leadId: lead.id, ...planStaleCheck(sentAt, operationCadence(operation)) });
+  await ctx.db.insert(events).values({
+    operationId: operation.id,
+    leadId: lead.id,
+    type: "reengagement_sent",
+    payload: { attempt: lead.reengagements + 1, template },
+  });
+}
+
+/**
+ * Right after "Ganhou", asks the person for the sale value. They just tapped
+ * a button on the tool's number, so their window is open: free text, no template.
+ */
+async function askSaleValue(ctx: ActionContext, lead: Lead, action: Action) {
+  const to = typeof action.payload.to === "string" ? action.payload.to : null;
+  if (!to) return;
+  await ctx.whatsapp.sendText(
+    ctx.toolPhoneNumberId,
+    to,
+    `Boa! Qual foi o valor da venda para ${lead.contactName?.trim() || "esse lead"}? Responda só com o número, por exemplo 1500. Se preferir não informar, pode ignorar.`,
+  );
 }
 
 async function askOutcome(ctx: ActionContext, lead: Lead) {
@@ -303,9 +440,9 @@ async function askOutcome(ctx: ActionContext, lead: Lead) {
     template: NOTIFICATION_TEMPLATES.askOutcome,
     bodyParams: [firstName(lead)],
     quickReplyPayloads: [
-      { index: 0, payload: outcomePayload("won", lead.id) },
-      { index: 1, payload: outcomePayload("lost", lead.id) },
-      { index: 2, payload: outcomePayload("open", lead.id) },
+      { index: 0, payload: buttonPayload("won", lead.id) },
+      { index: 1, payload: buttonPayload("lost", lead.id) },
+      { index: 2, payload: buttonPayload("open", lead.id) },
     ],
   });
 }
@@ -315,6 +452,9 @@ async function outOfHoursReply(ctx: ActionContext, lead: Lead, operation: Operat
   const now = new Date();
   // Free text is only allowed inside the lead's 24-hour window.
   if (!text || !operation.phoneNumberId || !lead.whatsappConsent || !canSendFreeform(lead.lastInboundAt, now)) return;
+  // The automatic first reply already covers a brand-new lead, and one notice per 12 hours is enough.
+  if (!lead.firstContactAt) return;
+  if (lead.lastOutOfHoursReplyAt && now.getTime() - lead.lastOutOfHoursReplyAt.getTime() < 12 * 60 * 60 * 1000) return;
 
   const id = await ctx.whatsapp.sendText(operation.phoneNumberId, lead.contactPhone, text);
   await ctx.db.insert(messages).values({

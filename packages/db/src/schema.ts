@@ -25,7 +25,12 @@ const timestamps = {
 
 export const operationMode = pgEnum("operation_mode", ["team", "solo"]);
 export const personRole = pgEnum("person_role", ["seller", "manager"]);
-export const leadSource = pgEnum("lead_source", ["form", "meta_lead_ads", "whatsapp"]);
+/**
+ * "whatsapp_ad": wrote after tapping a click-to-WhatsApp ad (referral present).
+ * "whatsapp": wrote without an ad, origin unknown. "form" and "meta_lead_ads"
+ * are kept only because Postgres cannot drop enum values; nothing creates them.
+ */
+export const leadSource = pgEnum("lead_source", ["form", "meta_lead_ads", "whatsapp", "whatsapp_ad"]);
 export const leadStage = pgEnum("lead_stage", ["new", "in_progress", "won", "lost", "no_reply"]);
 export const messageDirection = pgEnum("message_direction", ["inbound", "outbound"]);
 export const messageSender = pgEnum("message_sender", ["lead", "automation", "business_app"]);
@@ -39,6 +44,8 @@ export const actionKind = pgEnum("action_kind", [
   "stale_check",
   "out_of_hours_reply",
   "weekly_report",
+  "reengagement",
+  "ask_sale_value",
 ]);
 export const actionStatus = pgEnum("action_status", ["pending", "running", "done", "cancelled", "failed"]);
 
@@ -61,8 +68,16 @@ export const agencyMembers = pgTable(
 );
 
 export type CadenceSettings = {
-  firstContactTemplate: string;
+  /**
+   * Free text sent in seconds when a new lead writes. The lead started the
+   * conversation, so no template is needed. Keep it neutral: a number that is
+   * not a lead may receive it before anyone taps "Não é lead".
+   */
+  firstReplyMessage: string;
+  /** Follow-ups for a lead who stops answering after the first reply. Templates. */
   followUps: { afterMinutes: number; template: string }[];
+  /** Template sent to resume a conversation that stalled for Y days. */
+  reengagementTemplate?: string;
   /**
    * Free text sent when a lead writes outside business hours. It is always a
    * reply to the lead's own message, so no template is needed.
@@ -88,15 +103,6 @@ export const operations = pgTable("operations", {
   wabaId: text("waba_id"),
   phoneNumberId: text("phone_number_id").unique(),
   displayPhone: text("display_phone"),
-  /** Facebook Page whose Lead Ads forms feed this operation. */
-  metaPageId: text("meta_page_id").unique(),
-  /**
-   * Set to true only when the Lead Ads form shows explicit text that the lead
-   * will be contacted on WhatsApp. A "whatsapp_consent" question overrides it.
-   */
-  leadAdsDisclaimerConsent: boolean("lead_ads_disclaimer_consent").notNull().default(false),
-  /** sha256 of the key forms use to post leads to /api/intake/:operationId. */
-  intakeKeyHash: text("intake_key_hash"),
   firstResponseMinutes: integer("first_response_minutes").notNull().default(5),
   staleDays: integer("stale_days").notNull().default(3),
   cadence: jsonb("cadence").$type<CadenceSettings>().notNull(),
@@ -119,6 +125,8 @@ export const people = pgTable(
     role: personRole("role").notNull(),
     active: boolean("active").notNull().default(true),
     lastAssignedAt: timestamp("last_assigned_at", { withTimezone: true }),
+    /** Set after the person taps "Ganhou": their next text message is the sale value. */
+    pendingSaleValueLeadId: uuid("pending_sale_value_lead_id"),
     ...timestamps,
   },
   (t) => [index("people_operation_idx").on(t.operationId)],
@@ -142,6 +150,14 @@ export const leads = pgTable(
     stage: leadStage("stage").notNull().default("new"),
     lostReason: text("lost_reason"),
     ownerPersonId: uuid("owner_person_id").references(() => people.id, { onDelete: "set null" }),
+    /** Click id from the ad referral, for Meta's Conversions API later. */
+    ctwaClid: text("ctwa_clid"),
+    /** Came from an ad but was already in the client's history or address book. */
+    knownContact: boolean("known_contact").notNull().default(false),
+    /** Informed by the owner after "Ganhou". Optional. */
+    saleValueCents: integer("sale_value_cents"),
+    /** Automatic attempts to resume a stalled conversation. */
+    reengagements: integer("reengagements").notNull().default(0),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
     firstContactAt: timestamp("first_contact_at", { withTimezone: true }),
     firstLeadReplyAt: timestamp("first_lead_reply_at", { withTimezone: true }),
@@ -196,6 +212,44 @@ export const scheduledActions = pgTable(
     index("scheduled_actions_due_idx").on(t.status, t.runAt),
     index("scheduled_actions_lead_idx").on(t.leadId, t.status),
   ],
+);
+
+/**
+ * Numbers the client already talks to, from the 180-day history, the app's
+ * address book, or a conversation the client started. None of them becomes a
+ * new lead unless they come from an ad. "Não é lead" sets ignoredAt for good.
+ */
+export const contacts = pgTable(
+  "contacts",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    operationId: uuid("operation_id").notNull().references(() => operations.id, { onDelete: "cascade" }),
+    phone: text("phone").notNull(),
+    name: text("name"),
+    inAddressBook: boolean("in_address_book").notNull().default(false),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }),
+    ignoredAt: timestamp("ignored_at", { withTimezone: true }),
+    ...timestamps,
+  },
+  (t) => [uniqueIndex("contacts_operation_phone_idx").on(t.operationId, t.phone)],
+);
+
+/**
+ * The 180 days of chat history Meta shares once, at activation. Only time and
+ * direction are kept, never the text: enough to know who was already a contact
+ * and to measure the client's "before".
+ */
+export const historyMessages = pgTable(
+  "history_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    operationId: uuid("operation_id").notNull().references(() => operations.id, { onDelete: "cascade" }),
+    contactPhone: text("contact_phone").notNull(),
+    waMessageId: text("wa_message_id").notNull().unique(),
+    direction: messageDirection("direction").notNull(),
+    sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("history_messages_operation_idx").on(t.operationId, t.sentAt)],
 );
 
 /** Append-only history. The weekly report is computed from here. */

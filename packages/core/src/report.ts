@@ -4,14 +4,18 @@
  */
 
 export type ReportLead = {
-  source: "form" | "meta_lead_ads" | "whatsapp";
+  source: "form" | "meta_lead_ads" | "whatsapp" | "whatsapp_ad";
   campaign: string | null;
   stage: "new" | "in_progress" | "won" | "lost" | "no_reply";
   receivedAt: Date;
   firstContactAt: Date | null;
   firstLeadReplyAt: Date | null;
   firstBusinessReplyAt: Date | null;
+  saleValueCents?: number | null;
 };
+
+/** Leads that wrote first: they are waiting for an answer from the moment they arrive. */
+const wroteFirst = (lead: ReportLead) => lead.source === "whatsapp" || lead.source === "whatsapp_ad";
 
 export type WeeklyReport = {
   leadsReceived: number;
@@ -19,13 +23,15 @@ export type WeeklyReport = {
   byCampaign: { campaign: string; leads: number; won: number }[];
   /** Of leads the tool contacted, share reached within 60 seconds. */
   contactedWithinMinuteRate: number | null;
-  /** Leads that answered at least once. */
+  /** Leads that wrote at least once (every WhatsApp lead does). */
   leadsReplied: number;
-  /** Median minutes between the lead's first reply and a person's first answer. */
+  /** Median minutes between the lead's first message and a person's first answer. */
   medianBusinessResponseMinutes: number | null;
   /** Leads that replied but no person answered. */
   repliedWithoutBusinessAnswer: number;
   stages: Record<ReportLead["stage"], number>;
+  /** Sum of the sale values informed after "Ganhou", in cents. */
+  wonValueCents: number;
 };
 
 function median(values: number[]): number | null {
@@ -38,13 +44,14 @@ function median(values: number[]): number | null {
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
 export function computeWeeklyReport(rows: ReportLead[]): WeeklyReport {
-  const bySource = { form: 0, meta_lead_ads: 0, whatsapp: 0 };
+  const bySource = { form: 0, meta_lead_ads: 0, whatsapp: 0, whatsapp_ad: 0 };
   const stages = { new: 0, in_progress: 0, won: 0, lost: 0, no_reply: 0 };
   const campaigns = new Map<string, { leads: number; won: number }>();
   let contacted = 0;
   let contactedFast = 0;
   let replied = 0;
   let repliedWithoutAnswer = 0;
+  let wonValueCents = 0;
   const responseMinutes: number[] = [];
 
   for (const lead of rows) {
@@ -62,10 +69,13 @@ export function computeWeeklyReport(rows: ReportLead[]): WeeklyReport {
       if (lead.firstContactAt.getTime() - lead.receivedAt.getTime() <= 60_000) contactedFast += 1;
     }
 
-    if (lead.firstLeadReplyAt) {
+    if (lead.stage === "won" && lead.saleValueCents) wonValueCents += lead.saleValueCents;
+
+    const waitingSince = wroteFirst(lead) ? lead.receivedAt : lead.firstLeadReplyAt;
+    if (waitingSince) {
       replied += 1;
-      if (lead.firstBusinessReplyAt && lead.firstBusinessReplyAt >= lead.firstLeadReplyAt) {
-        responseMinutes.push((lead.firstBusinessReplyAt.getTime() - lead.firstLeadReplyAt.getTime()) / 60_000);
+      if (lead.firstBusinessReplyAt && lead.firstBusinessReplyAt >= waitingSince) {
+        responseMinutes.push((lead.firstBusinessReplyAt.getTime() - waitingSince.getTime()) / 60_000);
       } else if (!lead.firstBusinessReplyAt) {
         repliedWithoutAnswer += 1;
       }
@@ -85,5 +95,6 @@ export function computeWeeklyReport(rows: ReportLead[]): WeeklyReport {
     medianBusinessResponseMinutes: medianResponse === null ? null : round1(medianResponse),
     repliedWithoutBusinessAnswer: repliedWithoutAnswer,
     stages,
+    wonValueCents,
   };
 }

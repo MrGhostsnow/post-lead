@@ -119,7 +119,6 @@ describe("pickNextOwner", () => {
 
 describe("cadence", () => {
   const config: CadenceConfig = {
-    firstContactTemplate: "first_contact",
     followUps: [
       { afterMinutes: 60, template: "follow_up_1" },
       { afterMinutes: 24 * 60, template: "follow_up_2" },

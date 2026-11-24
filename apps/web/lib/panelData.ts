@@ -1,6 +1,6 @@
 import "server-only";
 import { computeWeeklyReport, leadTemperature, type Temperature } from "@post-lead/core";
-import { and, desc, eq, events, gte, inArray, leads, operations, people, sql } from "@post-lead/db";
+import { and, contacts, desc, eq, events, gte, historyMessages, inArray, isNotNull, leads, operations, people, sql } from "@post-lead/db";
 import { getDb } from "./server";
 
 type Operation = typeof operations.$inferSelect;
@@ -45,7 +45,9 @@ export type LeadRow = {
   contactPhone: string;
   source: string;
   campaign: string | null;
+  knownContact: boolean;
   stage: string;
+  saleValueCents: number | null;
   ownerName: string | null;
   receivedAt: Date;
   temperature: Temperature;
@@ -60,7 +62,9 @@ export async function operationLeads(operation: Operation, limit = 100): Promise
       contactPhone: leads.contactPhone,
       source: leads.source,
       campaign: leads.campaign,
+      knownContact: leads.knownContact,
       stage: leads.stage,
+      saleValueCents: leads.saleValueCents,
       receivedAt: leads.receivedAt,
       lastInboundAt: leads.lastInboundAt,
       lastBusinessReplyAt: leads.lastBusinessReplyAt,
@@ -89,6 +93,34 @@ export async function lastSevenDays(operationId: string) {
     .from(leads)
     .where(and(eq(leads.operationId, operationId), gte(leads.receivedAt, new Date(Date.now() - 7 * DAY_MS))));
   return computeWeeklyReport(rows);
+}
+
+/** What activation brought in: history, known contacts, and numbers marked as not a lead. */
+export async function activationSummary(operationId: string) {
+  const db = getDb();
+  const [history] = await db
+    .select({ messages: sql<number>`count(*)::int`, since: sql<Date | null>`min(${historyMessages.sentAt})` })
+    .from(historyMessages)
+    .where(eq(historyMessages.operationId, operationId));
+  const [known] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(contacts)
+    .where(and(eq(contacts.operationId, operationId), sql`(${contacts.inAddressBook} or ${contacts.lastMessageAt} is not null)`));
+  const [ignored] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(contacts)
+    .where(and(eq(contacts.operationId, operationId), isNotNull(contacts.ignoredAt)));
+  const [declined] = await db
+    .select({ count: sql<number>`count(*)::int` })
+    .from(events)
+    .where(and(eq(events.operationId, operationId), eq(events.type, "history_declined")));
+  return {
+    historyMessages: history?.messages ?? 0,
+    historySince: history?.since ? new Date(history.since) : null,
+    knownContacts: known?.count ?? 0,
+    ignored: ignored?.count ?? 0,
+    historyDeclined: (declined?.count ?? 0) > 0,
+  };
 }
 
 export async function weeklyReports(operationId: string, limit = 6) {

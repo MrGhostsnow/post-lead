@@ -3,9 +3,9 @@ import { notFound } from "next/navigation";
 import { headers } from "next/headers";
 import { requireOperation, requireUser } from "@/lib/auth";
 import { clientLinkToken } from "@/lib/clientLink";
-import { lastSevenDays, operationLeads, operationPeople, weeklyReports } from "@/lib/panelData";
-import { formatDateTime, formatPhone, SOURCE_LABEL, STAGE_LABEL, TemperatureBadge } from "../../ui";
-import { ClientLinkControl, IntakeKeyControl } from "./Controls";
+import { activationSummary, lastSevenDays, operationLeads, operationPeople, weeklyReports } from "@/lib/panelData";
+import { formatDateTime, formatMoney, formatPhone, SOURCE_LABEL, STAGE_LABEL, TemperatureBadge } from "../../ui";
+import { ClientLinkControl } from "./Controls";
 
 export const dynamic = "force-dynamic";
 
@@ -17,11 +17,12 @@ export default async function OperationPage({ params }: { params: Promise<{ id: 
   const operation = await requireOperation(user.id, id);
   if (!operation) notFound();
 
-  const [leads, team, week, reports] = await Promise.all([
+  const [leads, team, week, reports, activation] = await Promise.all([
     operationLeads(operation),
     operationPeople(operation.id),
     lastSevenDays(operation.id),
     weeklyReports(operation.id),
+    activationSummary(operation.id),
   ]);
 
   const origin = (await headers()).get("origin") ?? process.env.APP_URL ?? "";
@@ -32,25 +33,29 @@ export default async function OperationPage({ params }: { params: Promise<{ id: 
     <main className="page">
       <Link href="/panel" className="crumb">← Clientes</Link>
       <div className="page-head">
-        <div>
+        <div style={{ flex: 1 }}>
           <h1>{operation.name}</h1>
           <p className="muted">
             {operation.mode === "team" ? "Equipe de vendedores" : "Atendido pelo dono"} · prazo de resposta {operation.firstResponseMinutes} min ·{" "}
             {operation.phoneNumberId ? "WhatsApp conectado" : "WhatsApp não conectado"}
           </p>
         </div>
+        <Link href={`/panel/operations/${operation.id}/edit`} className="button secondary">Editar cliente</Link>
       </div>
 
       <div className="stats">
         <div className="stat"><b>{week.leadsReceived}</b><span>leads em 7 dias</span></div>
         <div className="stat"><b>{pct(week.contactedWithinMinuteRate)}</b><span>contatados em até 1 min</span></div>
-        <div className="stat"><b>{week.leadsReplied}</b><span>responderam</span></div>
+        <div className="stat"><b>{week.repliedWithoutBusinessAnswer}</b><span>sem resposta da equipe</span></div>
         <div className="stat">
           <b>{week.medianBusinessResponseMinutes === null ? "–" : `${week.medianBusinessResponseMinutes} min`}</b>
           <span>para a equipe responder</span>
         </div>
         <div className="stat"><b style={{ color: late ? "var(--late)" : undefined }}>{late}</b><span>atrasados agora</span></div>
-        <div className="stat"><b>{week.stages.won}</b><span>ganhos em 7 dias</span></div>
+        <div className="stat">
+          <b>{week.stages.won}</b>
+          <span>ganhos em 7 dias{week.wonValueCents > 0 && <> · {formatMoney(week.wonValueCents)}</>}</span>
+        </div>
       </div>
 
       <div className="grid grid-2">
@@ -68,8 +73,15 @@ export default async function OperationPage({ params }: { params: Promise<{ id: 
                   <tr key={lead.id}>
                     <td><TemperatureBadge value={lead.temperature} /></td>
                     <td className="nowrap"><b>{lead.contactName ?? "Sem nome"}</b><br /><span className="small nowrap">{formatPhone(lead.contactPhone)}</span></td>
-                    <td>{SOURCE_LABEL[lead.source] ?? lead.source}{lead.campaign && <><br /><span className="small">{lead.campaign}</span></>}</td>
-                    <td>{STAGE_LABEL[lead.stage] ?? lead.stage}</td>
+                    <td>
+                      {SOURCE_LABEL[lead.source] ?? lead.source}
+                      {lead.campaign && <><br /><span className="small">{lead.campaign}</span></>}
+                      {lead.knownContact && <><br /><span className="small">já era contato</span></>}
+                    </td>
+                    <td>
+                      {STAGE_LABEL[lead.stage] ?? lead.stage}
+                      {lead.saleValueCents ? <><br /><span className="small nowrap">{formatMoney(lead.saleValueCents)}</span></> : null}
+                    </td>
                     <td>{lead.ownerName ?? <span className="small">–</span>}</td>
                     <td className="small nowrap">{formatDateTime(lead.receivedAt)}</td>
                   </tr>
@@ -97,10 +109,22 @@ export default async function OperationPage({ params }: { params: Promise<{ id: 
             <ClientLinkControl operationId={operation.id} url={clientUrl} />
           </section>
 
-          <section className="card stack">
-            <h2 style={{ margin: 0 }}>Captura de leads</h2>
-            <p className="code">POST /api/intake/{operation.id}</p>
-            <IntakeKeyControl operationId={operation.id} />
+          <section className="card">
+            <h2>Ativação</h2>
+            <ul className="list">
+              <li>
+                <span>Histórico de 180 dias</span>
+                <span className="small">
+                  {activation.historyDeclined
+                    ? "não compartilhado"
+                    : activation.historyMessages
+                      ? `${activation.historyMessages} mensagens${activation.historySince ? ` desde ${formatDateTime(activation.historySince).slice(0, 5)}` : ""}`
+                      : "ainda não recebido"}
+                </span>
+              </li>
+              <li><span>Contatos que não viram lead</span><span className="small">{activation.knownContacts}</span></li>
+              <li><span>Marcados como “Não é lead”</span><span className="small">{activation.ignored}</span></li>
+            </ul>
           </section>
 
           <section className="card">

@@ -16,10 +16,17 @@ export const STAGE_LABEL: Record<string, string> = {
 };
 
 export const SOURCE_LABEL: Record<string, string> = {
+  whatsapp_ad: "Anúncio",
+  whatsapp: "Origem não identificada",
   form: "Formulário",
-  meta_lead_ads: "Anúncio (Lead Ads)",
-  whatsapp: "WhatsApp",
+  meta_lead_ads: "Lead Ads",
 };
+
+const money = new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL", maximumFractionDigits: 0 });
+
+export function formatMoney(cents: number) {
+  return money.format(cents / 100);
+}
 
 export function TemperatureBadge({ value }: { value: Temperature }) {
   return <span className={`badge t-${value}`}>{TEMPERATURE_LABEL[value]}</span>;
