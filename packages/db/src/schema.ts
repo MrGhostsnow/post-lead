@@ -101,6 +101,8 @@ export const operations = pgTable("operations", {
   staleDays: integer("stale_days").notNull().default(3),
   cadence: jsonb("cadence").$type<CadenceSettings>().notNull(),
   businessHours: jsonb("business_hours").$type<BusinessHoursSettings>(),
+  /** Bump to revoke every client read-only link issued for this operation. */
+  clientLinkVersion: integer("client_link_version").notNull().default(1),
   /** In solo mode, optionally warn the agency when the owner does not act. */
   notifyAgencyInSoloMode: boolean("notify_agency_in_solo_mode").notNull().default(false),
   ...timestamps,

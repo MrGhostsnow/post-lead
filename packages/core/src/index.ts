@@ -6,3 +6,4 @@ export * from "./cadence";
 export * from "./whatsappClient";
 export * from "./leadgen";
 export * from "./report";
+export * from "./temperature";

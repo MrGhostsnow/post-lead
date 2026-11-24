@@ -1,0 +1,1 @@
+ALTER TABLE "operations" ADD COLUMN "client_link_version" integer DEFAULT 1 NOT NULL;

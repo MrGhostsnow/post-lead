@@ -12,7 +12,7 @@ The product spec lives outside this repo (MVP specification doc).
 
 ```
 apps/
-  web/        Next.js: WhatsApp and Lead Ads webhooks, lead intake API, agency panel (to do)
+  web/        Next.js: webhooks, lead intake API, agency panel, client read-only link
   worker/     Long-running process: applies webhooks, runs scheduled actions
 packages/
   core/       Pure logic: phone rules, webhook parsing, cadence, round-robin, API client
@@ -104,6 +104,36 @@ production.
 - Webhooks are verified (`X-Hub-Signature-256`), stored once, then processed.
 - Server code bypasses row-level security, so every query filters by `operation_id`.
 
+## Agency panel
+
+`/panel` is for the agency team only. Login is a magic link from Supabase Auth;
+nobody can sign up from the app.
+
+1. In Supabase: Authentication > URL Configuration, set the Site URL to
+   `APP_URL` and add `<APP_URL>/auth/callback` to the redirect URLs.
+2. Authentication > Users > Invite user, for each person on the team.
+3. Give them access to the agency (creates it the first time):
+
+   ```bash
+   npm run add-member -w @post-lead/worker -- --email voce@agencia.com.br --agency "Nome da agência"
+   ```
+
+4. Fill `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`,
+   `APP_URL` and `CLIENT_LINK_SECRET` in `.env`.
+
+What it does:
+
+- **Clientes**: every client with leads in the last 7 days, open leads and late ones.
+- **Novo cliente**: creates the operation, its people, cadence and business hours,
+  and shows the intake key once.
+- **Client page**: leads sorted by urgency (late, waiting, ok, closed), 7-day
+  numbers, people, weekly reports, a new intake key, and the client link.
+- **Client link** (`/c/<token>`): read-only view for the client, no login.
+  "Revogar e gerar outro" invalidates every link sent before.
+
+For local work without Supabase, set `DEV_AUTH_USER_ID` to a user id that is a
+member of an agency; login is skipped (never in production builds).
+
 ## Weekly report
 
 Every Monday at 08:00 (operation timezone) the worker computes the last 7 days
@@ -115,7 +145,7 @@ mode) using the `weekly_report` template.
 ## Not built yet
 
 - Coexistence onboarding (Embedded Signup): needs Tech Provider approval.
-- Agency panel and the client's read-only link.
+- Editing a client after creation (people, cadence, hours) in the panel.
 - Running more than one worker instance (no job lease yet).
 
 `npm audit` reports a moderate esbuild advisory through `drizzle-kit`. It only

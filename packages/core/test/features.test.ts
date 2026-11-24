@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   computeWeeklyReport,
+  leadTemperature,
   nextOpening,
   nextWeeklyReportAt,
   parseLeadFields,
@@ -114,5 +115,24 @@ describe("computeWeeklyReport", () => {
     const report = computeWeeklyReport([]);
     expect(report.contactedWithinMinuteRate).toBeNull();
     expect(report.medianBusinessResponseMinutes).toBeNull();
+  });
+});
+
+describe("leadTemperature", () => {
+  const now = new Date("2026-11-24T12:00:00Z");
+  const ago = (min: number) => new Date(now.getTime() - min * 60_000);
+
+  it("is ok when nobody owes an answer", () => {
+    expect(leadTemperature({ stage: "new", lastInboundAt: null, lastBusinessReplyAt: null }, now, 5)).toBe("ok");
+    expect(leadTemperature({ stage: "in_progress", lastInboundAt: ago(30), lastBusinessReplyAt: ago(20) }, now, 5)).toBe("ok");
+  });
+
+  it("is waiting within X minutes and late after", () => {
+    expect(leadTemperature({ stage: "in_progress", lastInboundAt: ago(3), lastBusinessReplyAt: null }, now, 5)).toBe("waiting");
+    expect(leadTemperature({ stage: "in_progress", lastInboundAt: ago(12), lastBusinessReplyAt: ago(60) }, now, 5)).toBe("late");
+  });
+
+  it("is closed for finished leads", () => {
+    expect(leadTemperature({ stage: "won", lastInboundAt: ago(90), lastBusinessReplyAt: null }, now, 5)).toBe("closed");
   });
 });
