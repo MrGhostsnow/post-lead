@@ -7,7 +7,9 @@ import {
   planResponseEscalation,
   readAssistantSettings,
   readAssistantState,
+  historyLeadTexts,
   type AssistantModel,
+  type FaqExtractor,
   type AssistantState,
   type HandoffReason,
   isWithinBusinessHours,
@@ -20,6 +22,7 @@ import {
 import {
   and,
   asc,
+  contacts,
   eq,
   events,
   gte,
@@ -54,6 +57,8 @@ export type ActionContext = {
   toolPhoneNumberId: string;
   /** Pre-attendance model. Without it, assistant leads get the fixed reply and go straight to a person. */
   assistant?: AssistantModel;
+  /** Builds the FAQ list from the activation history. Optional. */
+  faqExtractor?: FaqExtractor;
 };
 
 /** Puts actions left "running" by a crashed worker back in the queue. */
@@ -125,6 +130,7 @@ export async function ensureWeeklyReportsScheduled(db: Database, now = new Date(
 
 async function execute(ctx: ActionContext, action: Action) {
   if (action.kind === "weekly_report") return weeklyReport(ctx, action);
+  if (action.kind === "extract_faq") return extractFaq(ctx, action);
   if (!action.leadId) return;
   const [lead] = await ctx.db.select().from(leads).where(eq(leads.id, action.leadId));
   const [operation] = await ctx.db.select().from(operations).where(eq(operations.id, action.operationId));
@@ -622,6 +628,46 @@ async function outOfHoursReply(ctx: ActionContext, lead: Lead, operation: Operat
     .update(leads)
     .set({ lastOutOfHoursReplyAt: now, lastOutboundAt: now, updatedAt: now })
     .where(eq(leads.id, lead.id));
+}
+
+/**
+ * Reads the history text once to list common questions for the agency to
+ * review, skipping the address book, then erases the text from the stored
+ * webhooks. Only time and direction remain (history_messages).
+ */
+async function extractFaq(ctx: ActionContext, action: Action) {
+  const [operation] = await ctx.db.select().from(operations).where(eq(operations.id, action.operationId));
+  if (!operation?.phoneNumberId) return;
+
+  const match = { entry: [{ changes: [{ field: "history", value: { metadata: { phone_number_id: operation.phoneNumberId } } }] }] };
+  const rows = await ctx.db.execute<{ id: string; payload: unknown }>(
+    sql`select id, payload from webhook_events where provider = 'whatsapp' and payload @> ${JSON.stringify(match)}::jsonb`,
+  );
+  const addressBook = await ctx.db
+    .select({ phone: contacts.phone })
+    .from(contacts)
+    .where(and(eq(contacts.operationId, operation.id), eq(contacts.inAddressBook, true)));
+
+  let questions: string[] = [];
+  let skipped: string | null = null;
+  try {
+    const texts = historyLeadTexts(rows.map((r) => r.payload), new Set(addressBook.map((c) => c.phone)));
+    if (!ctx.faqExtractor) skipped = "no model configured";
+    else questions = await ctx.faqExtractor.extract(texts);
+  } catch (error) {
+    skipped = error instanceof Error ? error.message.slice(0, 200) : "error";
+  } finally {
+    // The text goes away whatever happened above.
+    for (const row of rows) {
+      await ctx.db.execute(sql`update webhook_events set payload = '{"redacted":"history"}'::jsonb where id = ${row.id}`);
+    }
+  }
+
+  await ctx.db.insert(events).values({
+    operationId: operation.id,
+    type: "faq_suggestions",
+    payload: { questions, ...(skipped ? { skipped } : {}) },
+  });
 }
 
 async function weeklyReport(ctx: ActionContext, action: Action) {

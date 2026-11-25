@@ -48,6 +48,7 @@ export const actionKind = pgEnum("action_kind", [
   "ask_sale_value",
   "assistant_reply",
   "assistant_deadline",
+  "extract_faq",
 ]);
 export const actionStatus = pgEnum("action_status", ["pending", "running", "done", "cancelled", "failed"]);
 
@@ -259,6 +260,20 @@ export const historyMessages = pgTable(
     sentAt: timestamp("sent_at", { withTimezone: true }).notNull(),
   },
   (t) => [index("history_messages_operation_idx").on(t.operationId, t.sentAt)],
+);
+
+/** Every saved version of a client's assistant settings, newest first in the panel. */
+export const assistantVersions = pgTable(
+  "assistant_versions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    operationId: uuid("operation_id").notNull().references(() => operations.id, { onDelete: "cascade" }),
+    settings: jsonb("settings").$type<Record<string, unknown>>().notNull(),
+    /** Supabase user who saved it. */
+    savedBy: uuid("saved_by"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("assistant_versions_operation_idx").on(t.operationId, t.createdAt)],
 );
 
 /** Append-only history. The weekly report is computed from here. */

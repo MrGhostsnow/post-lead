@@ -28,6 +28,7 @@ import {
   messages,
   operations,
   people,
+  scheduledActions,
   sql,
   webhookEvents,
   type Database,
@@ -43,6 +44,18 @@ export const WEBHOOK_PROVIDERS = { whatsapp: "whatsapp" } as const;
 
 /** Every automatic step that stops once a person or the lead moves the conversation. */
 const AUTOMATION = ["first_contact", "follow_up", "stale_check", "reengagement", "assistant_reply", "assistant_deadline"] as const;
+
+/** The address book sync usually lands within minutes of the history. */
+const FAQ_EXTRACTION_DELAY_MS = 30 * 60 * 1000;
+
+async function hasPendingOperationAction(db: Database, operationId: string, kind: "extract_faq") {
+  const rows = await db
+    .select({ id: scheduledActions.id })
+    .from(scheduledActions)
+    .where(and(eq(scheduledActions.operationId, operationId), eq(scheduledActions.kind, kind), eq(scheduledActions.status, "pending")))
+    .limit(1);
+  return rows.length > 0;
+}
 
 /** A short pause lets a burst of lead messages get a single assistant reply. */
 const ASSISTANT_BATCH_MS = 3000;
@@ -200,7 +213,13 @@ async function handleLeadMessage(db: Database, event: InboundMessageEvent) {
   if (readAssistantState(lead.assistantState)?.status === "active" && event.text?.trim().toUpperCase() !== "SAIR") {
     await db
       .update(leads)
-      .set({ lastInboundAt: event.timestamp, contactName: lead.contactName ?? event.contactName, updatedAt: new Date() })
+      .set({
+        lastInboundAt: event.timestamp,
+        // Writing after the assistant's first reply counts as a reply (opening comparison).
+        firstLeadReplyAt: lead.firstLeadReplyAt ?? (lead.firstContactAt ? event.timestamp : null),
+        contactName: lead.contactName ?? event.contactName,
+        updatedAt: new Date(),
+      })
       .where(eq(leads.id, leadId));
     if (!(await hasPending(db, leadId, "assistant_reply"))) {
       await schedule(db, { operationId: operation.id, leadId, kind: "assistant_reply", runAt: new Date(Date.now() + ASSISTANT_BATCH_MS) });
@@ -365,6 +384,11 @@ async function handleHistory(db: Database, event: HistoryEvent) {
   }
   for (const [phone, lastMessageAt] of lastByContact) {
     await touchContact(db, operation.id, phone, { lastMessageAt });
+  }
+
+  // Read the text once, after the address book had time to arrive, then erase it.
+  if (!(await hasPendingOperationAction(db, operation.id, "extract_faq"))) {
+    await schedule(db, { operationId: operation.id, leadId: null, kind: "extract_faq", runAt: new Date(Date.now() + FAQ_EXTRACTION_DELAY_MS) });
   }
 
   await db.insert(events).values({

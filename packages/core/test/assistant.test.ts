@@ -8,6 +8,8 @@ import {
   HANDOFF_REPLY,
   newAssistantState,
   parseModelTurn,
+  historyBaseline,
+  historyLeadTexts,
   PRICE_INSIST_REPLY,
   type AssistantSettings,
   type ModelTurn,
@@ -119,5 +121,33 @@ describe("parseModelTurn", () => {
       askedPrice: false,
       handoff: null,
     });
+  });
+});
+
+describe("historyBaseline", () => {
+  const at = (min: number) => new Date(Date.UTC(2026, 5, 1, 12, min));
+  it("measures response time and unanswered waits from time and direction", () => {
+    const b = historyBaseline([
+      { contactPhone: "a", direction: "inbound", sentAt: at(0) },
+      { contactPhone: "a", direction: "inbound", sentAt: at(1) },
+      { contactPhone: "a", direction: "outbound", sentAt: at(10) },
+      { contactPhone: "b", direction: "inbound", sentAt: at(0) },
+      { contactPhone: "b", direction: "outbound", sentAt: at(30) },
+      { contactPhone: "b", direction: "inbound", sentAt: at(40) },
+      { contactPhone: "c", direction: "outbound", sentAt: at(0) },
+    ]);
+    expect(b).toEqual({ contacts: 3, waits: 3, medianResponseMinutes: 20, unansweredRate: 33 });
+  });
+});
+
+describe("historyLeadTexts", () => {
+  it("takes the first message and questions, skipping the address book", () => {
+    const payload = {
+      entry: [{ changes: [{ field: "history", value: { history: [{ threads: [
+        { id: "1", messages: [{ from: "1", text: { body: "Oi" } }, { from: "biz", text: { body: "Olá?" } }, { from: "1", text: { body: "Aceita cartão?" } }, { from: "1", text: { body: "ok" } }] },
+        { id: "2", messages: [{ from: "2", text: { body: "Sou o fornecedor" } }] },
+      ] }] } }] }],
+    };
+    expect(historyLeadTexts([payload], new Set(["2"]))).toEqual(["Oi", "Aceita cartão?"]);
   });
 });

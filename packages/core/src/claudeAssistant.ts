@@ -1,4 +1,4 @@
-import { MODEL_HANDOFF_REASONS, type AssistantModel, type ModelTurn } from "./assistant";
+import { MODEL_HANDOFF_REASONS, type AssistantModel, type FaqExtractor, type ModelTurn } from "./assistant";
 
 export class AssistantApiError extends Error {
   constructor(
@@ -100,4 +100,40 @@ export function parseModelTurn(input: unknown): ModelTurn {
   }
   const handoff = MODEL_HANDOFF_REASONS.find((r) => r === value.handoff) ?? null;
   return { reply: value.reply, collected, askedPrice: value.askedPrice === true, handoff };
+}
+
+/**
+ * FaqExtractor backed by the Claude API. Receives lead messages from the
+ * history once, returns up to 15 common questions. The texts are not kept.
+ */
+export function createClaudeFaqExtractor(options: { apiKey: string; model: string; fetchImpl?: typeof fetch }): FaqExtractor {
+  const doFetch = options.fetchImpl ?? fetch;
+  return {
+    async extract(texts) {
+      if (texts.length === 0) return [];
+      const response = await doFetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "x-api-key": options.apiKey, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({
+          model: options.model,
+          max_tokens: 1200,
+          system:
+            "Você recebe mensagens que clientes mandaram a uma empresa pelo WhatsApp. Liste as perguntas mais comuns, de forma genérica, em português, sem nomes, telefones ou qualquer dado pessoal. No máximo 15, da mais comum para a menos comum.",
+          messages: [{ role: "user", content: texts.map((t) => `- ${t.replace(/\s+/g, " ")}`).join("\n") }],
+          tools: [
+            {
+              name: "listar_perguntas",
+              description: "Registra as perguntas frequentes.",
+              input_schema: { type: "object", properties: { questions: { type: "array", items: { type: "string" } } }, required: ["questions"] },
+            },
+          ],
+          tool_choice: { type: "tool", name: "listar_perguntas" },
+        }),
+      });
+      const json = (await response.json().catch(() => null)) as { content?: { type: string; input?: { questions?: unknown } }[]; error?: { message?: string } } | null;
+      if (!response.ok) throw new AssistantApiError(json?.error?.message ?? `Claude API error ${response.status}`, response.status);
+      const questions = json?.content?.find((c) => c.type === "tool_use")?.input?.questions;
+      return Array.isArray(questions) ? questions.filter((q): q is string => typeof q === "string" && q.trim() !== "").slice(0, 15) : [];
+    },
+  };
 }

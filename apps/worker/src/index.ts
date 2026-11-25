@@ -4,7 +4,7 @@
  * one instance in the MVP; claiming uses SKIP LOCKED, but there is no lease
  * for crashed jobs other than recoverStuckActions at startup.
  */
-import { createClaudeAssistant, createWhatsAppClient } from "@post-lead/core";
+import { createClaudeAssistant, createClaudeFaqExtractor, createWhatsAppClient } from "@post-lead/core";
 import { createDb } from "@post-lead/db";
 import {
   ensureWeeklyReportsScheduled,
@@ -27,9 +27,9 @@ const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000);
 
 // Optional: without a key, clients with the assistant on get the fixed reply and go straight to a person.
 const anthropicKey = process.env.ANTHROPIC_API_KEY;
-const assistant = anthropicKey
-  ? createClaudeAssistant({ apiKey: anthropicKey, model: process.env.ANTHROPIC_MODEL ?? "claude-haiku-5-5" })
-  : undefined;
+const anthropicModel = process.env.ANTHROPIC_MODEL ?? "claude-haiku-5-5";
+const assistant = anthropicKey ? createClaudeAssistant({ apiKey: anthropicKey, model: anthropicModel }) : undefined;
+const faqExtractor = anthropicKey ? createClaudeFaqExtractor({ apiKey: anthropicKey, model: anthropicModel }) : undefined;
 
 const HOUR_MS = 60 * 60 * 1000;
 let lastReportCheck = 0;
@@ -48,7 +48,7 @@ async function tick() {
   }
 
   const webhooks = await processPendingWebhooks(db, { toolPhoneNumberId });
-  const actions = await runDueActions({ db, whatsapp, toolPhoneNumberId, assistant });
+  const actions = await runDueActions({ db, whatsapp, toolPhoneNumberId, assistant, faqExtractor });
   if (webhooks || actions) {
     console.log(`[worker] webhooks=${webhooks} actions=${actions}`);
   }

@@ -95,6 +95,11 @@ export type AssistantModel = {
   respond(input: { system: string; conversation: ConversationTurn[]; fieldKeys: string[] }): Promise<ModelTurn>;
 };
 
+/** Turns what leads asked in the history into a short list of common questions. */
+export type FaqExtractor = {
+  extract(texts: string[]): Promise<string[]>;
+};
+
 export const MAX_ASSISTANT_TURNS = 8;
 /** Without a handoff by then, the seller takes over with what was collected. */
 export const ASSISTANT_DEADLINE_MS = 15 * 60 * 1000;

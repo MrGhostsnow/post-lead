@@ -1,6 +1,6 @@
 import "server-only";
-import { computeWeeklyReport, HANDOFF_LABEL, leadTemperature, readAssistantState, type Temperature } from "@post-lead/core";
-import { and, contacts, desc, eq, events, gte, historyMessages, inArray, isNotNull, leads, operations, people, sql } from "@post-lead/db";
+import { computeWeeklyReport, HANDOFF_LABEL, historyBaseline, leadTemperature, readAssistantState, type Temperature } from "@post-lead/core";
+import { and, assistantVersions, contacts, desc, eq, events, gte, historyMessages, inArray, isNotNull, leads, operations, people, sql } from "@post-lead/db";
 import { getDb } from "./server";
 
 type Operation = typeof operations.$inferSelect;
@@ -134,13 +134,55 @@ export async function activationSummary(operationId: string) {
     .select({ count: sql<number>`count(*)::int` })
     .from(events)
     .where(and(eq(events.operationId, operationId), eq(events.type, "history_declined")));
+  // The "before": how the client answered in the history, without the address book.
+  const addressBook = new Set(
+    (await db.select({ phone: contacts.phone }).from(contacts)
+      .where(and(eq(contacts.operationId, operationId), eq(contacts.inAddressBook, true)))).map((c) => c.phone),
+  );
+  const points = (await db
+    .select({ contactPhone: historyMessages.contactPhone, direction: historyMessages.direction, sentAt: historyMessages.sentAt })
+    .from(historyMessages)
+    .where(eq(historyMessages.operationId, operationId))).filter((p) => !addressBook.has(p.contactPhone));
+  const [faq] = await db
+    .select({ payload: events.payload, createdAt: events.createdAt })
+    .from(events)
+    .where(and(eq(events.operationId, operationId), eq(events.type, "faq_suggestions")))
+    .orderBy(desc(events.createdAt))
+    .limit(1);
   return {
+    before: points.length ? historyBaseline(points) : null,
+    faqSuggestions: ((faq?.payload as { questions?: string[] } | undefined)?.questions ?? []) as string[],
     historyMessages: history?.messages ?? 0,
     historySince: history?.since ? new Date(history.since) : null,
     knownContacts: known?.count ?? 0,
     ignored: ignored?.count ?? 0,
     historyDeclined: (declined?.count ?? 0) > 0,
   };
+}
+
+/** Leads that got each assistant opening, and how many wrote back after it. */
+export async function openingStats(operationId: string) {
+  const rows = await getDb()
+    .select({ state: leads.assistantState, firstContactAt: leads.firstContactAt, firstLeadReplyAt: leads.firstLeadReplyAt })
+    .from(leads)
+    .where(and(eq(leads.operationId, operationId), isNotNull(leads.assistantState), isNotNull(leads.firstContactAt)));
+  const stats = [0, 1].map((variant) => ({ variant, leads: 0, replied: 0 }));
+  for (const r of rows) {
+    const state = readAssistantState(r.state);
+    if (!state) continue;
+    stats[state.openingVariant]!.leads += 1;
+    if (r.firstLeadReplyAt) stats[state.openingVariant]!.replied += 1;
+  }
+  return stats;
+}
+
+export async function assistantVersionList(operationId: string, limit = 10) {
+  return getDb()
+    .select({ id: assistantVersions.id, createdAt: assistantVersions.createdAt })
+    .from(assistantVersions)
+    .where(eq(assistantVersions.operationId, operationId))
+    .orderBy(desc(assistantVersions.createdAt))
+    .limit(limit);
 }
 
 export async function weeklyReports(operationId: string, limit = 6) {

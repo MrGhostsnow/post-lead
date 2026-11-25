@@ -112,6 +112,15 @@ summary, and the X-minute clock starts then (or at the next opening).
 - Any model failure sends the fixed first reply and hands over (`ai_error`).
 - Model: Claude API (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`). Without a key the
   fallback path runs.
+- Panel page `/panel/operations/<id>/assistant`: settings (name, openings A and
+  B, fields to collect, allowed information, FAQ, extra instructions), a test
+  chat that uses the saved settings and the same rules, the reply rate of each
+  opening, and saved versions with "Restaurar".
+- 30 minutes after the history arrives, the worker reads the lead-side text once
+  (skipping the address book), stores up to 15 common questions as a
+  `faq_suggestions` event for the agency to review, and erases the history text
+  from the stored webhooks. The client page shows the "before": median response
+  time and % unanswered, computed from time and direction only.
 
 ## Activation history
 

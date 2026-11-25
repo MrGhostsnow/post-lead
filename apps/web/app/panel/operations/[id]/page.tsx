@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { readAssistantSettings } from "@post-lead/core";
 import { headers } from "next/headers";
 import { requireOperation, requireUser } from "@/lib/auth";
 import { clientLinkToken } from "@/lib/clientLink";
@@ -40,7 +41,12 @@ export default async function OperationPage({ params }: { params: Promise<{ id: 
             {operation.phoneNumberId ? "WhatsApp conectado" : "WhatsApp não conectado"}
           </p>
         </div>
-        <Link href={`/panel/operations/${operation.id}/edit`} className="button secondary">Editar cliente</Link>
+        <div style={{ display: "flex", gap: 8 }}>
+          <Link href={`/panel/operations/${operation.id}/assistant`} className="button secondary">
+            IA: {readAssistantSettings(operation.assistant)?.enabled ? "ligada" : "desligada"}
+          </Link>
+          <Link href={`/panel/operations/${operation.id}/edit`} className="button secondary">Editar cliente</Link>
+        </div>
       </div>
 
       <div className="stats">
@@ -127,6 +133,15 @@ export default async function OperationPage({ params }: { params: Promise<{ id: 
                       : "ainda não recebido"}
                 </span>
               </li>
+              {activation.before && (
+                <li>
+                  <span>Antes da ferramenta</span>
+                  <span className="small">
+                    {activation.before.medianResponseMinutes === null ? "–" : `resposta em ${activation.before.medianResponseMinutes} min`}
+                    {activation.before.unansweredRate !== null && ` · ${activation.before.unansweredRate}% sem resposta`}
+                  </span>
+                </li>
+              )}
               <li><span>Contatos que não viram lead</span><span className="small">{activation.knownContacts}</span></li>
               <li><span>Marcados como “Não é lead”</span><span className="small">{activation.ignored}</span></li>
             </ul>

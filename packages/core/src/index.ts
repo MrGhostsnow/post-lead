@@ -9,3 +9,4 @@ export * from "./report";
 export * from "./temperature";
 export * from "./assistant";
 export * from "./claudeAssistant";
+export * from "./history";

@@ -3,7 +3,7 @@
  * Skipped unless TEST_DATABASE_URL is set. Never point it at production.
  */
 import type { AssistantModel, ModelTurn, SendTemplateInput, WhatsAppClient } from "@post-lead/core";
-import { agencies, and, createDb, eq, leads, operations, people, scheduledActions, sql } from "@post-lead/db";
+import { agencies, and, createDb, eq, events, leads, operations, people, scheduledActions, sql } from "@post-lead/db";
 import { describe, expect, it } from "vitest";
 import { processPendingWebhooks, runDueActions, storeWebhook } from "../src";
 
@@ -235,5 +235,35 @@ describe.skipIf(!url)("pre-attendance assistant", () => {
 
     const after = await leadOf(opId);
     expect(after.handoffSummary).toBe("Procura: Moto 160 · Motivo: 15 minutos sem concluir");
+  }, 30_000);
+
+  it("reads the history once for common questions, skips the address book and erases the text", async () => {
+    const { pn, opId } = await setup("faq");
+    const seen: string[][] = [];
+    const ctx = {
+      db,
+      whatsapp: fakeWhatsApp().client,
+      toolPhoneNumberId: TOOL,
+      faqExtractor: { async extract(texts: string[]) { seen.push(texts); return ["Aceita cartão?", "Qual o horário?"]; } },
+    };
+    const now = Math.floor(Date.now() / 1000);
+    await deliver(pn, "smb_app_state_sync", { state_sync: [{ type: "contact", contact: { full_name: "Fornecedor", phone_number: "5577987770002" }, action: "add" }] });
+    await deliver(pn, "history", { history: [{ threads: [
+      { id: "5577987770001", messages: [
+        { from: "5577987770001", id: `wamid.faq.${stamp}.1`, timestamp: String(now - 86400), type: "text", text: { body: "Boa tarde" } },
+        { from: "5577987770001", id: `wamid.faq.${stamp}.2`, timestamp: String(now - 86300), type: "text", text: { body: "Aceita cartão?" } },
+      ] },
+      { id: "5577987770002", messages: [{ from: "5577987770002", id: `wamid.faq.${stamp}.3`, timestamp: String(now - 86000), type: "text", text: { body: "Segue o boleto do fornecedor" } }] },
+    ] }] });
+
+    await db.update(scheduledActions).set({ runAt: sql`now() - interval '1 second'` })
+      .where(and(eq(scheduledActions.operationId, opId), sql`${scheduledActions.kind} = 'extract_faq'`));
+    await run(opId, ctx);
+
+    expect(seen).toEqual([["Boa tarde", "Aceita cartão?"]]);
+    const [suggestions] = await db.select().from(events).where(and(eq(events.operationId, opId), eq(events.type, "faq_suggestions")));
+    expect(suggestions?.payload).toEqual({ questions: ["Aceita cartão?", "Qual o horário?"] });
+    const leftovers = await db.execute(sql`select count(*)::int as n from webhook_events where payload::text like ${`%wamid.faq.${stamp}%`}`);
+    expect(leftovers[0]).toMatchObject({ n: 0 });
   }, 30_000);
 });
