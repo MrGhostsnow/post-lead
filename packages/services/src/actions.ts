@@ -1,6 +1,15 @@
 import {
+  applyModelTurn,
+  buildSystemPrompt,
   canSendFreeform,
   computeWeeklyReport,
+  handoffSummary,
+  planResponseEscalation,
+  readAssistantSettings,
+  readAssistantState,
+  type AssistantModel,
+  type AssistantState,
+  type HandoffReason,
   isWithinBusinessHours,
   nextOpening,
   nextWeeklyReportAt,
@@ -10,6 +19,7 @@ import {
 } from "@post-lead/core";
 import {
   and,
+  asc,
   eq,
   events,
   gte,
@@ -42,6 +52,8 @@ export type ActionContext = {
   whatsapp: WhatsAppClient;
   /** Sends notifications to sellers and managers. */
   toolPhoneNumberId: string;
+  /** Pre-attendance model. Without it, assistant leads get the fixed reply and go straight to a person. */
+  assistant?: AssistantModel;
 };
 
 /** Puts actions left "running" by a crashed worker back in the queue. */
@@ -128,7 +140,7 @@ async function execute(ctx: ActionContext, action: Action) {
         ctx,
         lead,
         NOTIFICATION_TEMPLATES.newLead,
-        [firstName(lead), lead.contactPhone, originLabel(lead)],
+        [firstName(lead), lead.contactPhone, originLabel(lead), lead.handoffSummary ?? "sem pré-atendimento"],
         [{ index: 0, payload: buttonPayload("not_lead", lead.id) }],
       );
     case "notify_owner_reply":
@@ -150,6 +162,13 @@ async function execute(ctx: ActionContext, action: Action) {
       return reengage(ctx, lead, operation, action);
     case "ask_sale_value":
       return askSaleValue(ctx, lead, action);
+    case "assistant_reply":
+      return assistantReply(ctx, lead, operation);
+    case "assistant_deadline": {
+      const state = readAssistantState(lead.assistantState);
+      if (state?.status === "active") await handOff(ctx, lead, operation, state, "timeout");
+      return;
+    }
   }
 }
 
@@ -232,8 +251,20 @@ async function firstContact(ctx: ActionContext, lead: Lead, operation: Operation
     .set({ firstContactAt: now, lastOutboundAt: now, ...(outOfHours ? { lastOutOfHoursReplyAt: now } : {}), updatedAt: now })
     .where(eq(leads.id, lead.id));
 
+  await scheduleFollowUps(ctx, lead, operation, now);
+
+  await ctx.db.insert(events).values({
+    operationId: operation.id,
+    leadId: lead.id,
+    type: "first_contact_sent",
+    payload: { outOfHours: Boolean(outOfHours) },
+  });
+}
+
+/** Follow-ups for a lead who goes quiet after the first reply; each re-checks before sending. */
+async function scheduleFollowUps(ctx: ActionContext, lead: Lead, operation: Operation, from: Date) {
   const cadence = operationCadence(operation);
-  const steps = planFollowUps(now, cadence);
+  const steps = planFollowUps(from, cadence);
   for (const step of steps) {
     await schedule(ctx.db, {
       operationId: operation.id,
@@ -245,14 +276,134 @@ async function firstContact(ctx: ActionContext, lead: Lead, operation: Operation
   }
   // No follow-ups configured: still close the loop after Y days.
   if (steps.length === 0) {
-    await schedule(ctx.db, { operationId: operation.id, leadId: lead.id, ...planStaleCheck(now, cadence) });
+    await schedule(ctx.db, { operationId: operation.id, leadId: lead.id, ...planStaleCheck(from, cadence) });
+  }
+}
+
+const MAX_CONVERSATION_MESSAGES = 40;
+
+/**
+ * One assistant turn: reads the conversation, asks the model, applies the
+ * fixed rules in code, sends the reply and hands over when it is time.
+ * Any failure falls back to the fixed first reply and a person.
+ */
+async function assistantReply(ctx: ActionContext, lead: Lead, operation: Operation) {
+  const state = readAssistantState(lead.assistantState);
+  if (!state || state.status !== "active" || isClosed(lead) || !lead.whatsappConsent || !operation.phoneNumberId) return;
+  const now = new Date();
+  if (!canSendFreeform(lead.lastInboundAt, now)) return handOff(ctx, lead, operation, state, "timeout");
+
+  const settings = readAssistantSettings(operation.assistant);
+  const isFirstReply = !lead.firstContactAt;
+  let decision;
+  try {
+    if (!settings?.enabled) throw new Error("assistant turned off for this client");
+    if (!ctx.assistant) throw new Error("no assistant model configured");
+    const rows = await ctx.db
+      .select({ direction: messages.direction, body: messages.body })
+      .from(messages)
+      .where(eq(messages.leadId, lead.id))
+      .orderBy(asc(messages.sentAt))
+      .limit(MAX_CONVERSATION_MESSAGES);
+    const conversation = rows
+      .filter((r) => r.body && !r.body.startsWith("template:"))
+      .map((r) => ({ from: r.direction === "inbound" ? ("lead" as const) : ("assistant" as const), text: r.body! }));
+    const closedNow = Boolean(operation.businessHours && !isWithinBusinessHours(now, operation.businessHours));
+    const turn = await ctx.assistant.respond({
+      system: buildSystemPrompt(settings, { closedNow }),
+      conversation,
+      fieldKeys: settings.fields.map((f) => f.key),
+    });
+    decision = applyModelTurn(state, turn, settings, { isFirstReply });
+  } catch (error) {
+    // Nobody is left without an answer: the fixed reply goes out and a person takes over.
+    if (isFirstReply) await firstContact(ctx, lead, operation);
+    await handOff(ctx, lead, operation, state, "ai_error", error instanceof Error ? error.message : String(error));
+    return;
+  }
+
+  const id = await ctx.whatsapp.sendText(operation.phoneNumberId, lead.contactPhone, decision.reply);
+  await ctx.db.insert(messages).values({
+    operationId: lead.operationId,
+    leadId: lead.id,
+    waMessageId: id,
+    direction: "outbound",
+    sender: "automation",
+    type: "text",
+    body: decision.reply,
+    sentAt: now,
+  });
+  await ctx.db
+    .update(leads)
+    .set({ assistantState: decision.state, lastOutboundAt: now, ...(isFirstReply ? { firstContactAt: now } : {}), updatedAt: now })
+    .where(eq(leads.id, lead.id));
+
+  if (isFirstReply) {
+    await scheduleFollowUps(ctx, lead, operation, now);
+    await ctx.db.insert(events).values({
+      operationId: operation.id,
+      leadId: lead.id,
+      type: "first_contact_sent",
+      payload: { assistant: true, openingVariant: state.openingVariant },
+    });
+  }
+  if (decision.handoff) await handOff(ctx, lead, operation, decision.state, decision.handoff);
+}
+
+/**
+ * The assistant is done: the owner gets the "lead novo" notice with the
+ * summary, and the X-minute clock starts now (or at the next opening).
+ */
+async function handOff(
+  ctx: ActionContext,
+  lead: Lead,
+  operation: Operation,
+  state: AssistantState,
+  reason: HandoffReason,
+  error?: string,
+) {
+  const final: AssistantState = { ...state, status: "handed_off", handoffReason: reason };
+  const settings = readAssistantSettings(operation.assistant);
+  const summary = settings ? handoffSummary(final, settings) : null;
+  const now = new Date();
+
+  await ctx.db
+    .update(leads)
+    .set({ assistantState: final, handedOffAt: now, handoffSummary: summary, updatedAt: now })
+    .where(eq(leads.id, lead.id));
+  await ctx.db
+    .update(scheduledActions)
+    .set({ status: "cancelled", updatedAt: now })
+    .where(
+      and(
+        eq(scheduledActions.leadId, lead.id),
+        eq(scheduledActions.status, "pending"),
+        sql`${scheduledActions.kind} in ('assistant_reply', 'assistant_deadline')`,
+      ),
+    );
+
+  // Someone already answered in the app: no notice, no clock.
+  const [fresh] = await ctx.db.select().from(leads).where(eq(leads.id, lead.id));
+  if (!fresh?.lastBusinessReplyAt) {
+    const hours = operation.businessHours;
+    const notifyAt = (hours && nextOpening(now, hours)) || now;
+    await schedule(ctx.db, { operationId: operation.id, leadId: lead.id, kind: "notify_owner_new_lead", runAt: notifyAt });
+    for (const step of planResponseEscalation(now, operationCadence(operation), hours)) {
+      await schedule(ctx.db, {
+        operationId: operation.id,
+        leadId: lead.id,
+        kind: step.kind,
+        runAt: step.runAt,
+        payload: { since: now.toISOString() },
+      });
+    }
   }
 
   await ctx.db.insert(events).values({
     operationId: operation.id,
     leadId: lead.id,
-    type: "first_contact_sent",
-    payload: { outOfHours: Boolean(outOfHours) },
+    type: "assistant_handoff",
+    payload: { reason, ...(error ? { error: error.slice(0, 300) } : {}) },
   });
 }
 

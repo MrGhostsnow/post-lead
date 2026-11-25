@@ -8,6 +8,7 @@ import {
   parseWhatsAppWebhook,
   planResponseEscalation,
   planStaleCheck,
+  readAssistantState,
   type BusinessEchoEvent,
   type CadenceConfig,
   type ContactSyncEvent,
@@ -41,7 +42,10 @@ const OUT_OF_HOURS_REPLY_GAP_MS = 12 * 60 * 60 * 1000;
 export const WEBHOOK_PROVIDERS = { whatsapp: "whatsapp" } as const;
 
 /** Every automatic step that stops once a person or the lead moves the conversation. */
-const AUTOMATION = ["first_contact", "follow_up", "stale_check", "reengagement"] as const;
+const AUTOMATION = ["first_contact", "follow_up", "stale_check", "reengagement", "assistant_reply", "assistant_deadline"] as const;
+
+/** A short pause lets a burst of lead messages get a single assistant reply. */
+const ASSISTANT_BATCH_MS = 3000;
 
 /** Stores a raw webhook. Returns false when the same payload was already stored. */
 export async function storeWebhook(db: Database, provider: string, rawBody: string): Promise<boolean> {
@@ -192,6 +196,18 @@ async function handleLeadMessage(db: Database, event: InboundMessageEvent) {
   const cadence = operationCadence(operation);
   const leadId = lead.id;
 
+  // The assistant is still talking to this lead: it answers, nobody is notified yet.
+  if (readAssistantState(lead.assistantState)?.status === "active" && event.text?.trim().toUpperCase() !== "SAIR") {
+    await db
+      .update(leads)
+      .set({ lastInboundAt: event.timestamp, contactName: lead.contactName ?? event.contactName, updatedAt: new Date() })
+      .where(eq(leads.id, leadId));
+    if (!(await hasPending(db, leadId, "assistant_reply"))) {
+      await schedule(db, { operationId: operation.id, leadId, kind: "assistant_reply", runAt: new Date(Date.now() + ASSISTANT_BATCH_MS) });
+    }
+    return;
+  }
+
   // Opt-out offered in the last follow-up: stop everything, never message again.
   if (event.text?.trim().toUpperCase() === "SAIR") {
     await db.transaction(async (tx) => {
@@ -303,6 +319,8 @@ async function handleNewNumber(db: Database, operation: OperationRow, event: Inb
   const cadence = operationCadence(operation);
   await db.transaction(async (tx) => {
     await tx.update(leads).set({ lastInboundAt: event.timestamp, updatedAt: new Date() }).where(eq(leads.id, leadId));
+    // With the assistant, the person's clock starts at handoff, not now.
+    if ("assistant" in created && created.assistant) return;
     // The lead is waiting for a person from the first message: start the clock.
     for (const action of planResponseEscalation(event.timestamp, cadence, operation.businessHours)) {
       await schedule(tx, {
@@ -404,6 +422,10 @@ async function handleBusinessEcho(db: Database, event: BusinessEchoEvent) {
         lastBusinessReplyAt: event.timestamp,
         lastOutboundAt: event.timestamp,
         stage: lead.stage === "new" ? "in_progress" : lead.stage,
+        // Someone from the client answered in the app: the assistant stops in this chat at once.
+        ...(readAssistantState(lead.assistantState)?.status === "active"
+          ? { assistantState: { ...readAssistantState(lead.assistantState)!, status: "stopped" as const } }
+          : {}),
         updatedAt: new Date(),
       })
       .where(eq(leads.id, lead.id));

@@ -95,6 +95,24 @@ When a number with no lead writes to the client's WhatsApp
 The "lead novo" notice has a "Não é lead" button: it deletes the lead, cancels
 everything scheduled for it and ignores the number from then on.
 
+## Pre-attendance assistant
+
+Per client (`operations.assistant`), off by default. When on, a new lead talks
+to the assistant first; the seller is notified only at handoff, with a one-line
+summary, and the X-minute clock starts then (or at the next opening).
+
+- Fixed rules live in `packages/core/src/assistant.ts` and sit above the client's
+  settings in the prompt: virtual assistant, no price, deadline or stock, no
+  invented facts, short messages.
+- Code, not the model, decides: replies are checked by `guardReply` (a blocked
+  reply hands over instead), the second price question hands over with a fixed
+  reply, all fields collected hands over, 8 turns hand over, and 15 minutes
+  after the first message the seller takes over with what was collected.
+- Someone answering in the app stops the assistant in that chat at once.
+- Any model failure sends the fixed first reply and hands over (`ai_error`).
+- Model: Claude API (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL`). Without a key the
+  fallback path runs.
+
 ## Activation history
 
 Right after the client connects the number, Meta sends the last 180 days of

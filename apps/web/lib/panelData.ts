@@ -1,5 +1,5 @@
 import "server-only";
-import { computeWeeklyReport, leadTemperature, type Temperature } from "@post-lead/core";
+import { computeWeeklyReport, HANDOFF_LABEL, leadTemperature, readAssistantState, type Temperature } from "@post-lead/core";
 import { and, contacts, desc, eq, events, gte, historyMessages, inArray, isNotNull, leads, operations, people, sql } from "@post-lead/db";
 import { getDb } from "./server";
 
@@ -48,6 +48,9 @@ export type LeadRow = {
   knownContact: boolean;
   stage: string;
   saleValueCents: number | null;
+  /** "Com a IA", or the handoff reason, for leads that went through the assistant. */
+  assistantLabel: string | null;
+  handoffSummary: string | null;
   ownerName: string | null;
   receivedAt: Date;
   temperature: Temperature;
@@ -65,6 +68,9 @@ export async function operationLeads(operation: Operation, limit = 100): Promise
       knownContact: leads.knownContact,
       stage: leads.stage,
       saleValueCents: leads.saleValueCents,
+      assistantState: leads.assistantState,
+      handedOffAt: leads.handedOffAt,
+      handoffSummary: leads.handoffSummary,
       receivedAt: leads.receivedAt,
       lastInboundAt: leads.lastInboundAt,
       lastBusinessReplyAt: leads.lastBusinessReplyAt,
@@ -79,7 +85,21 @@ export async function operationLeads(operation: Operation, limit = 100): Promise
   const now = new Date();
   const order: Record<Temperature, number> = { late: 0, waiting: 1, ok: 2, closed: 3 };
   return rows
-    .map((r) => ({ ...r, temperature: leadTemperature(r, now, operation.firstResponseMinutes) }))
+    .map(({ assistantState, ...r }) => {
+      const state = readAssistantState(assistantState);
+      const assistantActive = state?.status === "active";
+      return {
+        ...r,
+        assistantLabel: !state
+          ? null
+          : assistantActive
+            ? "Com a IA agora"
+            : state.status === "stopped"
+              ? "Vendedor assumiu da IA"
+              : `IA passou: ${HANDOFF_LABEL[state.handoffReason ?? "complete"]}`,
+        temperature: leadTemperature({ ...r, assistantActive }, now, operation.firstResponseMinutes),
+      };
+    })
     .sort((a, b) => order[a.temperature] - order[b.temperature]);
 }
 

@@ -7,3 +7,5 @@ export * from "./whatsappClient";
 export * from "./intake";
 export * from "./report";
 export * from "./temperature";
+export * from "./assistant";
+export * from "./claudeAssistant";

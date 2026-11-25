@@ -46,6 +46,8 @@ export const actionKind = pgEnum("action_kind", [
   "weekly_report",
   "reengagement",
   "ask_sale_value",
+  "assistant_reply",
+  "assistant_deadline",
 ]);
 export const actionStatus = pgEnum("action_status", ["pending", "running", "done", "cancelled", "failed"]);
 
@@ -107,6 +109,8 @@ export const operations = pgTable("operations", {
   staleDays: integer("stale_days").notNull().default(3),
   cadence: jsonb("cadence").$type<CadenceSettings>().notNull(),
   businessHours: jsonb("business_hours").$type<BusinessHoursSettings>(),
+  /** Pre-attendance assistant settings (see AssistantSettings in core). Null: off. */
+  assistant: jsonb("assistant").$type<Record<string, unknown>>(),
   /** Bump to revoke every client read-only link issued for this operation. */
   clientLinkVersion: integer("client_link_version").notNull().default(1),
   /** In solo mode, optionally warn the agency when the owner does not act. */
@@ -158,6 +162,11 @@ export const leads = pgTable(
     saleValueCents: integer("sale_value_cents"),
     /** Automatic attempts to resume a stalled conversation. */
     reengagements: integer("reengagements").notNull().default(0),
+    /** Pre-attendance conversation state (see AssistantState in core). Null: no assistant. */
+    assistantState: jsonb("assistant_state").$type<Record<string, unknown>>(),
+    /** When the assistant passed the lead to a person; the X-minute clock starts here. */
+    handedOffAt: timestamp("handed_off_at", { withTimezone: true }),
+    handoffSummary: text("handoff_summary"),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
     firstContactAt: timestamp("first_contact_at", { withTimezone: true }),
     firstLeadReplyAt: timestamp("first_lead_reply_at", { withTimezone: true }),

@@ -4,7 +4,7 @@
  * one instance in the MVP; claiming uses SKIP LOCKED, but there is no lease
  * for crashed jobs other than recoverStuckActions at startup.
  */
-import { createWhatsAppClient } from "@post-lead/core";
+import { createClaudeAssistant, createWhatsAppClient } from "@post-lead/core";
 import { createDb } from "@post-lead/db";
 import {
   ensureWeeklyReportsScheduled,
@@ -25,6 +25,12 @@ const whatsapp = createWhatsAppClient({ accessToken: required("META_ACCESS_TOKEN
 const toolPhoneNumberId = required("TOOL_PHONE_NUMBER_ID");
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000);
 
+// Optional: without a key, clients with the assistant on get the fixed reply and go straight to a person.
+const anthropicKey = process.env.ANTHROPIC_API_KEY;
+const assistant = anthropicKey
+  ? createClaudeAssistant({ apiKey: anthropicKey, model: process.env.ANTHROPIC_MODEL ?? "claude-haiku-5-5" })
+  : undefined;
+
 const HOUR_MS = 60 * 60 * 1000;
 let lastReportCheck = 0;
 
@@ -42,7 +48,7 @@ async function tick() {
   }
 
   const webhooks = await processPendingWebhooks(db, { toolPhoneNumberId });
-  const actions = await runDueActions({ db, whatsapp, toolPhoneNumberId });
+  const actions = await runDueActions({ db, whatsapp, toolPhoneNumberId, assistant });
   if (webhooks || actions) {
     console.log(`[worker] webhooks=${webhooks} actions=${actions}`);
   }
@@ -50,7 +56,7 @@ async function tick() {
 
 async function main() {
   await recoverStuckActions(db);
-  console.log("[worker] started");
+  console.log(`[worker] started${assistant ? "" : " (assistant off: ANTHROPIC_API_KEY not set)"}`);
 
   while (running) {
     try {

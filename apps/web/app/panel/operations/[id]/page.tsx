@@ -72,7 +72,12 @@ export default async function OperationPage({ params }: { params: Promise<{ id: 
                 {leads.map((lead) => (
                   <tr key={lead.id}>
                     <td><TemperatureBadge value={lead.temperature} /></td>
-                    <td className="nowrap"><b>{lead.contactName ?? "Sem nome"}</b><br /><span className="small nowrap">{formatPhone(lead.contactPhone)}</span></td>
+                    <td>
+                      <b className="nowrap">{lead.contactName ?? "Sem nome"}</b>
+                      <br /><span className="small nowrap">{formatPhone(lead.contactPhone)}</span>
+                      {lead.assistantLabel && <><br /><span className="small">{lead.assistantLabel}</span></>}
+                      {lead.handoffSummary && <><br /><span className="small" title={lead.handoffSummary}>{lead.handoffSummary.split(" · Motivo:")[0]}</span></>}
+                    </td>
                     <td>
                       {SOURCE_LABEL[lead.source] ?? lead.source}
                       {lead.campaign && <><br /><span className="small">{lead.campaign}</span></>}

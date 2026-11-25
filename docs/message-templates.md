@@ -52,7 +52,9 @@ Fixed names, defined in `packages/services/src/notifications.ts`.
 
 ### `notify_new_lead`
 
-> Novo lead: {{1}} ({{2}}), {{3}}. A primeira resposta já foi enviada. Abra o WhatsApp Business para continuar.
+> Novo lead: {{1}} ({{2}}), {{3}}. Resumo: {{4}}. Abra o WhatsApp Business para continuar.
+
+`{{4}}` is the assistant's one-line summary ("Procura: SUV · Melhor horário: tarde · Motivo: dados completos"), or "sem pré-atendimento" when the assistant is off.
 
 Quick-reply button: **Não é lead** (stops everything and ignores the number for good).
 

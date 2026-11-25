@@ -125,7 +125,7 @@ describe.skipIf(!url)("lead flow", () => {
       { phoneNumberId: pn, to: phone, body: "Oi! Recebemos sua mensagem, já já alguém te responde por aqui." },
     ]);
     const notice = wa.templates.find((t) => t.template === "notify_new_lead" && t.to === "5577911110001");
-    expect(notice).toMatchObject({ phoneNumberId: TOOL, bodyParams: ["Ana", phone, "anúncio Clareamento"] });
+    expect(notice).toMatchObject({ phoneNumberId: TOOL, bodyParams: ["Ana", phone, "anúncio Clareamento", "sem pré-atendimento"] });
     expect(notice?.quickReplyPayloads).toEqual([{ index: 0, payload: buttonPayload("not_lead", leadId) }]);
     expect(await pending(leadId)).toEqual(["follow_up", "manager_alert", "owner_reminder"]);
 

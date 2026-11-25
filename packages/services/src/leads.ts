@@ -1,4 +1,13 @@
-import { brazilPhoneVariants, nextOpening, normalizeBrazilPhone, pickNextOwner } from "@post-lead/core";
+import { randomUUID } from "node:crypto";
+import {
+  ASSISTANT_DEADLINE_MS,
+  brazilPhoneVariants,
+  newAssistantState,
+  nextOpening,
+  normalizeBrazilPhone,
+  pickNextOwner,
+  readAssistantSettings,
+} from "@post-lead/core";
 import { and, eq, events, inArray, leads, operations, people, type Database } from "@post-lead/db";
 import { schedule, type DbOrTx } from "./scheduling";
 
@@ -21,7 +30,8 @@ export type NewLeadInput = {
 };
 
 export type NewLeadResult =
-  | { status: "created"; leadId: string }
+  /** assistant: the pre-attendance assistant talks first; the owner hears at handoff. */
+  | { status: "created"; leadId: string; assistant: boolean }
   | { status: "duplicate"; leadId: string }
   | { status: "invalid_phone" };
 
@@ -69,10 +79,14 @@ export async function createLead(db: Database, input: NewLeadInput): Promise<New
       );
     const ownerId = pickNextOwner(candidates);
     const now = new Date();
+    const useAssistant = Boolean(readAssistantSettings(operation.assistant)?.enabled) && input.whatsappConsent;
+    const leadId = randomUUID();
 
     const [lead] = await tx
       .insert(leads)
       .values({
+        id: leadId,
+        assistantState: useAssistant ? newAssistantState(leadId) : null,
         operationId: operation.id,
         contactName: input.contactName ?? null,
         contactPhone: phone,
@@ -91,24 +105,35 @@ export async function createLead(db: Database, input: NewLeadInput): Promise<New
       .returning({ id: leads.id });
     if (!lead) throw new Error("Lead insert returned no row");
 
-    if (ownerId) {
-      await tx.update(people).set({ lastAssignedAt: now }).where(eq(people.id, ownerId));
-      // Nobody is woken up at night: the notice waits for the next opening.
-      const notifyAt = (operation.businessHours && nextOpening(now, operation.businessHours)) || now;
-      await schedule(tx, { operationId: operation.id, leadId: lead.id, kind: "notify_owner_new_lead", runAt: notifyAt });
-    }
+    if (ownerId) await tx.update(people).set({ lastAssignedAt: now }).where(eq(people.id, ownerId));
 
-    if (input.whatsappConsent) {
-      await schedule(tx, { operationId: operation.id, leadId: lead.id, kind: "first_contact", runAt: now });
+    if (useAssistant) {
+      // The assistant answers now and must hand over within 15 minutes.
+      await schedule(tx, { operationId: operation.id, leadId: lead.id, kind: "assistant_reply", runAt: now });
+      await schedule(tx, {
+        operationId: operation.id,
+        leadId: lead.id,
+        kind: "assistant_deadline",
+        runAt: new Date(now.getTime() + ASSISTANT_DEADLINE_MS),
+      });
+    } else {
+      if (ownerId) {
+        // Nobody is woken up at night: the notice waits for the next opening.
+        const notifyAt = (operation.businessHours && nextOpening(now, operation.businessHours)) || now;
+        await schedule(tx, { operationId: operation.id, leadId: lead.id, kind: "notify_owner_new_lead", runAt: notifyAt });
+      }
+      if (input.whatsappConsent) {
+        await schedule(tx, { operationId: operation.id, leadId: lead.id, kind: "first_contact", runAt: now });
+      }
     }
 
     await tx.insert(events).values({
       operationId: operation.id,
       leadId: lead.id,
       type: "lead_received",
-      payload: { source: input.source, ownerPersonId: ownerId, consent: input.whatsappConsent },
+      payload: { source: input.source, ownerPersonId: ownerId, consent: input.whatsappConsent, assistant: useAssistant },
     });
 
-    return { status: "created", leadId: lead.id };
+    return { status: "created", leadId: lead.id, assistant: useAssistant };
   });
 }
