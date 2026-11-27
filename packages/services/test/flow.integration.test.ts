@@ -31,18 +31,24 @@ const unix = (offsetSeconds = 0) => String(Math.floor(Date.now() / 1000) + offse
 function fakeWhatsApp() {
   const templates: SendTemplateInput[] = [];
   const texts: { phoneNumberId: string; to: string; body: string }[] = [];
+  const buttons: { to: string; body: string; buttons: { id: string; title: string }[] }[] = [];
   let n = 0;
   const client: WhatsAppClient = {
     async sendText(phoneNumberId, to, body) {
       texts.push({ phoneNumberId, to, body });
       return `wamid.out.text.${stamp}.${++n}`;
     },
+    async sendButtons(phoneNumberId, to, body, replyButtons) {
+      texts.push({ phoneNumberId, to, body });
+      buttons.push({ to, body, buttons: replyButtons });
+      return `wamid.out.btn.${stamp}.${++n}`;
+    },
     async sendTemplate(input) {
       templates.push(input);
       return `wamid.out.tpl.${stamp}.${++n}`;
     },
   };
-  return { client, templates, texts };
+  return { client, templates, texts, buttons };
 }
 
 const envelope = (phoneNumberId: string, field: string, value: Record<string, unknown>) =>
@@ -165,6 +171,33 @@ describe.skipIf(!url)("lead flow", () => {
     await deliver(TOOL, "messages", { messages: [{ from: "5577911110001", id: wamid("val"), timestamp: unix(), type: "text", text: { body: "R$ 1.500,00" } }] });
     const [won] = await db.select().from(leads).where(eq(leads.id, leadId));
     expect(won).toMatchObject({ stage: "won", saleValueCents: 150000 });
+  }, 30_000);
+
+  it("notifies as free text with buttons while the seller's 24-hour window is open", async () => {
+    const { pn, opId } = await setup("window");
+    const seller = "5577911115555";
+    await db.insert(people).values({ operationId: opId, name: "Rui", whatsappNumber: seller, role: "seller" });
+
+    // Rui wrote to the tool's number a minute ago: his window is open.
+    await deliver(TOOL, "messages", { messages: [{ from: seller, id: wamid("hi"), timestamp: unix(-60), type: "text", text: { body: "oi" } }] });
+    const [rui] = await db.select().from(people).where(and(eq(people.operationId, opId), eq(people.whatsappNumber, seller)));
+    expect(rui?.lastInboundAt).not.toBeNull();
+
+    const phone = "5577981115555";
+    await leadWrites(pn, phone, "Oi, tudo bem?");
+    const [lead] = await db.select().from(leads).where(eq(leads.operationId, opId));
+    await runDueActions(ctx);
+
+    expect(wa.templates.filter((t) => t.to === seller)).toHaveLength(0);
+    const sent = wa.buttons.find((b) => b.to === seller);
+    expect(sent?.body).toBe(`Novo lead: Ana (${phone}), origem não identificada. Resumo: sem pré-atendimento. Abra o WhatsApp Business para continuar.`);
+    expect(sent?.buttons).toEqual([{ id: buttonPayload("not_lead", lead!.id), title: "Não é lead" }]);
+
+    // A day later the window is closed: the reminder goes as the template.
+    await db.update(people).set({ lastInboundAt: sql`now() - interval '25 hours'` }).where(eq(people.id, rui!.id));
+    await makeDue(lead!.id, "owner_reminder");
+    await runDueActions(ctx);
+    expect(wa.templates.filter((t) => t.to === seller && t.template === "notify_owner_reminder")).toHaveLength(1);
   }, 30_000);
 
   it("keeps known contacts out, lets ads in, and stops for good on Não é lead", async () => {

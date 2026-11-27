@@ -132,6 +132,11 @@ export const people = pgTable(
     lastAssignedAt: timestamp("last_assigned_at", { withTimezone: true }),
     /** Set after the person taps "Ganhou": their next text message is the sale value. */
     pendingSaleValueLeadId: uuid("pending_sale_value_lead_id"),
+    /**
+     * Last message from this person to the tool's number. Within 24 hours,
+     * notifications go as free text instead of paid templates.
+     */
+    lastInboundAt: timestamp("last_inbound_at", { withTimezone: true }),
     ...timestamps,
   },
   (t) => [index("people_operation_idx").on(t.operationId)],

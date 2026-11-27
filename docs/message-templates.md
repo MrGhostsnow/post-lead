@@ -50,6 +50,14 @@ the lead's own message, so it needs no approval:
 
 Fixed names, defined in `packages/services/src/notifications.ts`.
 
+Meta classifies these as **marketing** (they are internal notices, not about the
+recipient's own order or account), so submit them in that category; utility is
+rejected. To keep the cost down, the worker sends the same text as free text,
+with reply buttons, whenever the person wrote to the tool's number in the last
+24 hours (`people.last_inbound_at`; any button tap counts). The template is only
+used when that window is closed. Keep `notificationText()` in step with the
+approved texts below.
+
 ### `notify_new_lead`
 
 > Novo lead: {{1}} ({{2}}), {{3}}. Resumo: {{4}}. Abra o WhatsApp Business para continuar.

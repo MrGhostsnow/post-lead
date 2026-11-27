@@ -481,6 +481,12 @@ async function handleBusinessEcho(db: Database, event: BusinessEchoEvent) {
 
 /** A seller or manager answered a notification sent by the tool's number. */
 async function handlePersonReply(db: Database, event: InboundMessageEvent) {
+  // Any message from them opens the 24-hour window on the tool's number.
+  await db
+    .update(people)
+    .set({ lastInboundAt: event.timestamp, updatedAt: new Date() })
+    .where(inArray(people.whatsappNumber, brazilPhoneVariants(event.from)));
+
   const parsed = event.buttonPayload ? parseButtonPayload(event.buttonPayload) : null;
   if (!parsed) return recordSaleValue(db, event);
 

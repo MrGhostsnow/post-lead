@@ -14,8 +14,13 @@ export type SendTemplateInput = {
   quickReplyPayloads?: TemplateButtonParam[];
 };
 
+/** A reply button on a free-text message; its id comes back when the person taps it. */
+export type ReplyButton = { id: string; title: string };
+
 export type WhatsAppClient = {
   sendText(phoneNumberId: string, to: string, body: string): Promise<string>;
+  /** Free text with up to three reply buttons. Only inside the 24-hour window. */
+  sendButtons(phoneNumberId: string, to: string, body: string, buttons: ReplyButton[]): Promise<string>;
   sendTemplate(input: SendTemplateInput): Promise<string>;
 };
 
@@ -69,6 +74,18 @@ export function createWhatsAppClient(options: {
   return {
     sendText(phoneNumberId, to, body) {
       return post(phoneNumberId, { to, type: "text", text: { body } });
+    },
+
+    sendButtons(phoneNumberId, to, body, buttons) {
+      return post(phoneNumberId, {
+        to,
+        type: "interactive",
+        interactive: {
+          type: "button",
+          body: { text: body },
+          action: { buttons: buttons.slice(0, 3).map((b) => ({ type: "reply", reply: { id: b.id, title: b.title.slice(0, 20) } })) },
+        },
+      });
     },
 
     sendTemplate(input) {

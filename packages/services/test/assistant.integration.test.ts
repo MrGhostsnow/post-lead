@@ -20,6 +20,10 @@ function fakeWhatsApp() {
       texts.push({ phoneNumberId, to, body });
       return `wamid.ai.text.${stamp}.${++seq}`;
     },
+    async sendButtons(phoneNumberId, to, body) {
+      texts.push({ phoneNumberId, to, body });
+      return `wamid.ai.btn.${stamp}.${++seq}`;
+    },
     async sendTemplate(input) {
       templates.push(input);
       return `wamid.ai.tpl.${stamp}.${++seq}`;

@@ -36,7 +36,13 @@ import {
   sql,
   type Database,
 } from "@post-lead/db";
-import { buttonPayload, NOTIFICATION_TEMPLATES } from "./notifications";
+import {
+  buttonPayload,
+  NOTIFICATION_BUTTON_TITLES,
+  NOTIFICATION_TEMPLATES,
+  notificationText,
+  type NotificationTemplate,
+} from "./notifications";
 import { schedule } from "./scheduling";
 import { operationCadence } from "./webhooks";
 
@@ -443,24 +449,51 @@ async function followUp(ctx: ActionContext, lead: Lead, operation: Operation, ac
   });
 }
 
+type QuickReply = { index: number; payload: string };
+
+/**
+ * Sends a notice from the tool's number to a seller or manager. If they wrote
+ * to the tool's number in the last 24 hours, it goes as free text (with reply
+ * buttons when it has any); otherwise as the approved template, which Meta
+ * charges as marketing.
+ */
+async function notifyPerson(
+  ctx: ActionContext,
+  person: typeof people.$inferSelect,
+  template: NotificationTemplate,
+  bodyParams: string[],
+  quickReplyPayloads?: QuickReply[],
+) {
+  if (canSendFreeform(person.lastInboundAt, new Date())) {
+    const body = notificationText(template, bodyParams);
+    const titles = NOTIFICATION_BUTTON_TITLES[template];
+    if (titles && quickReplyPayloads?.length) {
+      const buttons = quickReplyPayloads.map((b) => ({ id: b.payload, title: titles[b.index] ?? "Ok" }));
+      return ctx.whatsapp.sendButtons(ctx.toolPhoneNumberId, person.whatsappNumber, body, buttons);
+    }
+    return ctx.whatsapp.sendText(ctx.toolPhoneNumberId, person.whatsappNumber, body);
+  }
+  return ctx.whatsapp.sendTemplate({
+    phoneNumberId: ctx.toolPhoneNumberId,
+    to: person.whatsappNumber,
+    template,
+    bodyParams,
+    ...(quickReplyPayloads ? { quickReplyPayloads } : {}),
+  });
+}
+
 async function notifyOwner(
   ctx: ActionContext,
   lead: Lead,
-  template: string,
+  template: NotificationTemplate,
   bodyParams: string[],
-  quickReplyPayloads?: { index: number; payload: string }[],
+  quickReplyPayloads?: QuickReply[],
 ) {
   if (!lead.ownerPersonId) return false;
   const [owner] = await ctx.db.select().from(people).where(eq(people.id, lead.ownerPersonId));
   if (!owner?.active) return false;
 
-  await ctx.whatsapp.sendTemplate({
-    phoneNumberId: ctx.toolPhoneNumberId,
-    to: owner.whatsappNumber,
-    template,
-    bodyParams,
-    ...(quickReplyPayloads ? { quickReplyPayloads } : {}),
-  });
+  await notifyPerson(ctx, owner, template, bodyParams, quickReplyPayloads);
   return true;
 }
 
@@ -477,12 +510,11 @@ async function alertManagers(ctx: ActionContext, lead: Lead, operation: Operatio
 
   for (const manager of managers) {
     if (manager.id === owner?.id) continue; // Solo mode: the owner already got the reminder.
-    await ctx.whatsapp.sendTemplate({
-      phoneNumberId: ctx.toolPhoneNumberId,
-      to: manager.whatsappNumber,
-      template: NOTIFICATION_TEMPLATES.managerAlert,
-      bodyParams: [firstName(lead), owner?.name ?? "sem responsável", waited],
-    });
+    await notifyPerson(ctx, manager, NOTIFICATION_TEMPLATES.managerAlert, [
+      firstName(lead),
+      owner?.name ?? "sem responsável",
+      waited,
+    ]);
   }
 
   await ctx.db.insert(events).values({
@@ -588,21 +620,11 @@ async function askSaleValue(ctx: ActionContext, lead: Lead, action: Action) {
 }
 
 async function askOutcome(ctx: ActionContext, lead: Lead) {
-  if (!lead.ownerPersonId) return;
-  const [owner] = await ctx.db.select().from(people).where(eq(people.id, lead.ownerPersonId));
-  if (!owner?.active) return;
-
-  await ctx.whatsapp.sendTemplate({
-    phoneNumberId: ctx.toolPhoneNumberId,
-    to: owner.whatsappNumber,
-    template: NOTIFICATION_TEMPLATES.askOutcome,
-    bodyParams: [firstName(lead)],
-    quickReplyPayloads: [
-      { index: 0, payload: buttonPayload("won", lead.id) },
-      { index: 1, payload: buttonPayload("lost", lead.id) },
-      { index: 2, payload: buttonPayload("open", lead.id) },
-    ],
-  });
+  await notifyOwner(ctx, lead, NOTIFICATION_TEMPLATES.askOutcome, [firstName(lead)], [
+    { index: 0, payload: buttonPayload("won", lead.id) },
+    { index: 1, payload: buttonPayload("lost", lead.id) },
+    { index: 2, payload: buttonPayload("open", lead.id) },
+  ]);
 }
 
 async function outOfHoursReply(ctx: ActionContext, lead: Lead, operation: Operation) {
@@ -712,12 +734,7 @@ async function weeklyReport(ctx: ActionContext, action: Action) {
   ];
 
   for (const person of recipients) {
-    await ctx.whatsapp.sendTemplate({
-      phoneNumberId: ctx.toolPhoneNumberId,
-      to: person.whatsappNumber,
-      template: NOTIFICATION_TEMPLATES.weeklyReport,
-      bodyParams: params,
-    });
+    await notifyPerson(ctx, person, NOTIFICATION_TEMPLATES.weeklyReport, params);
   }
 
   await schedule(ctx.db, {

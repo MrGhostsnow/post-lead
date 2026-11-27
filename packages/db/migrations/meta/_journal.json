@@ -57,6 +57,13 @@
       "when": 1795565915695,
       "tag": "0007_extract_faq",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1795821432249,
+      "tag": "0008_thin_wasp",
+      "breakpoints": true
     }
   ]
 }
