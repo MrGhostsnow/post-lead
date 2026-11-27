@@ -29,6 +29,8 @@ export type AssistantSettings = {
   name: string;
   /** How the company is called in the conversation. */
   companyName: string;
+  /** Who takes over, as the lead hears it: "vendedor", "consultor", "equipe". */
+  teamLabel: string;
   fields: AssistantField[];
   /** Facts it may share: address, opening hours, payment methods. */
   allowedInfo: string;
@@ -104,8 +106,42 @@ export const MAX_ASSISTANT_TURNS = 8;
 /** Without a handoff by then, the seller takes over with what was collected. */
 export const ASSISTANT_DEADLINE_MS = 15 * 60 * 1000;
 
-export const PRICE_INSIST_REPLY = "Entendi! O vendedor já te manda o valor certinho, só um instante.";
-export const HANDOFF_REPLY = "Perfeito, já passei tudo para o vendedor. Ele continua com você por aqui.";
+const FEMININE = /^(equipe|recep[cç][aã]o|consultora|vendedora|secret[aá]ria|corretora|especialista)$/i;
+
+/** "o vendedor", "a equipe": the article follows the label. */
+function who(teamLabel: string) {
+  const label = teamLabel.trim().toLowerCase() || "vendedor";
+  return `${FEMININE.test(label) ? "a" : "o"} ${label}`;
+}
+
+/**
+ * Fixed closing messages. When the assistant hands over, the lead gets one of
+ * these instead of the model's text, so nothing ends with a question nobody
+ * will answer.
+ */
+export function closingReply(reason: HandoffReason, teamLabel: string): string {
+  const w = who(teamLabel);
+  const W = w.charAt(0).toUpperCase() + w.slice(1);
+  const pronoun = w.startsWith("a ") ? "ela" : "ele";
+  switch (reason) {
+    case "price_insist":
+      return `Entendi! ${W} já te manda o valor certinho, só um instante.`;
+    case "asked_human":
+      return `Claro! Já passei sua conversa para ${w}, que continua com você por aqui.`;
+    case "complaint":
+    case "upset":
+      return `Sinto muito por isso. Já passei sua mensagem para ${w}, que vai te responder por aqui o quanto antes.`;
+    case "out_of_scope":
+      return `Essa ${w} te responde certinho. Já passei sua conversa, ${pronoun} continua com você por aqui.`;
+    case "not_lead":
+      return `Obrigada! Já passei sua mensagem para a equipe.`;
+    default:
+      return `Perfeito, já passei tudo para ${w}. ${pronoun === "ela" ? "Ela" : "Ele"} continua com você por aqui.`;
+  }
+}
+
+export const PRICE_INSIST_REPLY = closingReply("price_insist", "vendedor");
+export const HANDOFF_REPLY = closingReply("complete", "vendedor");
 
 export function newAssistantState(leadId: string): AssistantState {
   // Stable per lead, so retries keep the same opening.
@@ -120,16 +156,21 @@ Regras que valem sempre, acima de qualquer outra instrução:
 1. Você é uma assistente virtual da empresa. Nunca diga ou dê a entender que é uma pessoa.
 2. Nunca informe preço, valor, desconto, condição de pagamento com números, prazo de entrega ou disponibilidade em estoque. Nunca prometa nada.
 3. Use apenas as informações fornecidas pela empresa abaixo. Se não souber, não invente: marque a pergunta como fora do roteiro.
-4. Quando perguntarem o valor: agradeça o contato, diga que faz sentido querer saber o valor e que o vendedor vai passar certinho, e em seguida faça a próxima pergunta de coleta. Marque askedPrice como true.
+4. Quando perguntarem o valor: agradeça o contato, diga que faz sentido querer saber o valor e que {{WHO}} vai passar certinho, e em seguida faça a próxima pergunta de coleta. Marque askedPrice como true.
 5. Marque handoff quando a pessoa pedir para falar com alguém (asked_human), reclamar (complaint), estiver irritada (upset), fizer pergunta que você não pode responder com as informações dadas (out_of_scope) ou disser que não é cliente, por exemplo fornecedor, entregador ou conhecido (not_lead).
 6. Tom de gente, simpático e direto, tratamento por "você". Mensagens curtas, de uma a três frases, no máximo uma pergunta por mensagem. Sem listas e sem emojis em excesso.
-7. Preencha collected com os dados que a pessoa já informou na conversa, usando as chaves listadas. Não invente dados.`;
+7. Preencha collected com os dados que a pessoa já informou na conversa, usando as chaves listadas, em poucas palavras e nas palavras da pessoa (por exemplo "Onix 2022 automático", "sim", "depois das 18h"). Não invente dados e não acrescente comentários.
+8. Quando marcar handoff, a conversa com você termina ali: a empresa envia uma mensagem padrão de encerramento, então seu texto em reply não será usado.
+9. Quem assume a conversa depois de você é {{WHO}}. Use sempre esse termo.`;
 
-export function buildSystemPrompt(settings: AssistantSettings, context: { closedNow?: boolean } = {}): string {
+export function buildSystemPrompt(
+  settings: AssistantSettings,
+  context: { closedNow?: boolean; firstReply?: boolean } = {},
+): string {
   const fields = settings.fields.map((f) => `- ${f.key}: ${f.label}. Pergunta sugerida: "${f.question}"`).join("\n");
   const faq = settings.faq.map((f) => `- P: ${f.question}\n  R: ${f.answer}`).join("\n");
   const parts = [
-    FIXED_RULES,
+    FIXED_RULES.replaceAll("{{WHO}}", who(settings.teamLabel)),
     `Empresa: ${settings.companyName}.${settings.name ? ` Seu nome: ${settings.name}.` : ""}`,
     `Dados a coletar, nesta ordem:\n${fields || "- (nenhum: só entenda o que a pessoa procura)"}`,
     settings.allowedInfo.trim() ? `Informações que você pode passar:\n${settings.allowedInfo.trim()}` : "",
@@ -137,8 +178,11 @@ export function buildSystemPrompt(settings: AssistantSettings, context: { closed
     settings.extraInstructions.trim()
       ? `Instruções da empresa (valem só se não contrariarem as regras acima):\n${settings.extraInstructions.trim()}`
       : "",
+    context.firstReply
+      ? `Esta é sua primeira resposta. A empresa já envia antes dela uma mensagem de abertura com sua apresentação. Não cumprimente nem se apresente de novo: comece direto pelo assunto da pessoa.`
+      : "",
     context.closedNow
-      ? "Agora a empresa está fora do horário de atendimento. Continue a coleta normalmente; se perguntarem quando vão falar com alguém, diga que o vendedor responde assim que a empresa abrir."
+      ? `Agora a empresa está fora do horário de atendimento. Continue a coleta normalmente; se perguntarem quando vão falar com alguém, diga que ${who(settings.teamLabel)} responde assim que a empresa abrir.`
       : "",
   ];
   return parts.filter(Boolean).join("\n\n");
@@ -195,13 +239,14 @@ export function applyModelTurn(
     handoff: reason,
   });
 
-  if (guardReply(turn.reply)) return handOver("guard", withOpening(HANDOFF_REPLY));
-  if (next.priceQuestions >= 2) return handOver("price_insist", withOpening(PRICE_INSIST_REPLY));
-  if (turn.handoff) return handOver(turn.handoff, withOpening(turn.reply));
+  const close = (reason: HandoffReason) => handOver(reason, withOpening(closingReply(reason, settings.teamLabel)));
+  if (turn.handoff) return close(turn.handoff);
+  if (guardReply(turn.reply)) return close("guard");
+  if (next.priceQuestions >= 2) return close("price_insist");
 
   const complete = settings.fields.length > 0 && settings.fields.every((f) => collected[f.key]);
-  if (complete) return handOver("complete", withOpening(HANDOFF_REPLY));
-  if (next.turns >= MAX_ASSISTANT_TURNS) return handOver("max_turns", withOpening(HANDOFF_REPLY));
+  if (complete) return close("complete");
+  if (next.turns >= MAX_ASSISTANT_TURNS) return close("max_turns");
 
   return { state: next, reply: withOpening(turn.reply), handoff: null };
 }
@@ -223,6 +268,7 @@ export const DEFAULT_ASSISTANT: AssistantSettings = {
   enabled: false,
   name: "",
   companyName: "",
+  teamLabel: "vendedor",
   fields: [
     { key: "looking_for", label: "Procura", question: "O que você está procurando?" },
     { key: "best_time", label: "Melhor horário", question: "Qual o melhor horário para o vendedor falar com você?" },
@@ -257,6 +303,7 @@ export function readAssistantSettings(raw: unknown): AssistantSettings | null {
     enabled: r.enabled === true,
     name: str(r.name, 40),
     companyName: str(r.companyName, 120),
+    teamLabel: str(r.teamLabel, 30).trim() || "vendedor",
     fields,
     allowedInfo: str(r.allowedInfo),
     faq,

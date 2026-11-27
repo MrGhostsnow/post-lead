@@ -26,6 +26,10 @@ export function AssistantForm({ operationId, initial }: { operationId: string; i
             <span>Nome da empresa na conversa</span>
             <input name="companyName" required defaultValue={val("companyName")} />
           </label>
+          <label className="field">
+            <span>Quem assume depois da IA</span>
+            <input name="teamLabel" placeholder="vendedor, consultor, equipe" defaultValue={val("teamLabel") || "vendedor"} />
+          </label>
         </div>
         <label className="field">
           <span>Abertura A</span>

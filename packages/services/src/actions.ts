@@ -316,7 +316,7 @@ async function assistantReply(ctx: ActionContext, lead: Lead, operation: Operati
       .map((r) => ({ from: r.direction === "inbound" ? ("lead" as const) : ("assistant" as const), text: r.body! }));
     const closedNow = Boolean(operation.businessHours && !isWithinBusinessHours(now, operation.businessHours));
     const turn = await ctx.assistant.respond({
-      system: buildSystemPrompt(settings, { closedNow }),
+      system: buildSystemPrompt(settings, { closedNow, firstReply: isFirstReply }),
       conversation,
       fieldKeys: settings.fields.map((f) => f.key),
     });

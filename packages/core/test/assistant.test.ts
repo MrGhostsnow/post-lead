@@ -84,9 +84,21 @@ describe("applyModelTurn", () => {
     expect(d.reply).not.toContain("89.900");
   });
 
-  it("follows the model when it asks for a person", () => {
-    const d = applyModelTurn(state(), turn({ reply: "Claro, já chamo o vendedor!", handoff: "asked_human" }), settings, { isFirstReply: false });
-    expect(d).toMatchObject({ handoff: "asked_human", reply: "Claro, já chamo o vendedor!" });
+  it("closes with a fixed message, never the model's, when it hands over", () => {
+    const d = applyModelTurn(state(), turn({ reply: "Já chamo! Enquanto isso, o que você procura?", handoff: "asked_human" }), settings, { isFirstReply: false });
+    expect(d).toMatchObject({ handoff: "asked_human", reply: "Claro! Já passei sua conversa para o vendedor, que continua com você por aqui." });
+  });
+
+  it("uses the client's word for who takes over", () => {
+    const clinic = { ...settings, teamLabel: "equipe" };
+    const d = applyModelTurn(state(), turn({ collected: { looking_for: "x", trade_in: "y" } }), clinic, { isFirstReply: false });
+    expect(d.reply).toBe("Perfeito, já passei tudo para a equipe. Ela continua com você por aqui.");
+    expect(buildSystemPrompt(clinic)).toContain("Quem assume a conversa depois de você é a equipe");
+  });
+
+  it("tells the model not to introduce itself again on the first reply", () => {
+    expect(buildSystemPrompt(settings, { firstReply: true })).toContain("Não cumprimente nem se apresente de novo");
+    expect(buildSystemPrompt(settings, { firstReply: false })).not.toContain("Não cumprimente");
   });
 
   it("ignores fields the client did not configure", () => {

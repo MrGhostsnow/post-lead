@@ -31,10 +31,11 @@ if (!apiKey) {
 }
 const model = createClaudeAssistant({ apiKey, model: process.env.ANTHROPIC_MODEL ?? "claude-haiku-5-5" });
 
-const base = (companyName: string, fields: [string, string][], allowedInfo: string): AssistantSettings => ({
+const base = (companyName: string, fields: [string, string][], allowedInfo: string, teamLabel = "vendedor"): AssistantSettings => ({
   enabled: true,
   name: "Bia",
   companyName,
+  teamLabel,
   fields: fields.map(([label, question]) => ({
     key: label.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "_"),
     label,
@@ -67,6 +68,7 @@ const clinica = base(
     ["Melhor horário", "Qual o melhor horário pra gente te ligar?"],
   ],
   "Rua das Flores, 50. Seg a sex, 8h às 19h. Aceitamos cartão e Pix.",
+  "equipe",
 );
 const imoveis = base(
   "Lar Imóveis",
@@ -76,6 +78,7 @@ const imoveis = base(
     ["Quartos", "Quantos quartos você precisa?"],
   ],
   "Atendemos Vitória da Conquista e região.",
+  "corretor",
 );
 
 type Scenario = {
@@ -109,19 +112,26 @@ for (const scenario of scenarios.filter((s) => !values.only || s.id.includes(val
     if (handoff) break;
     conversation.push({ from: "lead", text });
     console.log(`  lead: ${text}`);
+    const firstReply = !conversation.some((t) => t.from === "assistant");
     const turn = await model.respond({
-      system: buildSystemPrompt(scenario.settings),
+      system: buildSystemPrompt(scenario.settings, { firstReply }),
       conversation,
       fieldKeys: scenario.settings.fields.map((f) => f.key),
     });
     // The raw model text is checked too: the guard must catch anything that slips.
     const raw = guardReply(turn.reply);
     if (raw) console.log(`  (modelo tentou: "${turn.reply}" → bloqueado: ${raw})`);
-    const decision = applyModelTurn(state, turn, scenario.settings, { isFirstReply: !conversation.some((t) => t.from === "assistant") });
+    const decision = applyModelTurn(state, turn, scenario.settings, { isFirstReply: firstReply });
     conversation.push({ from: "assistant", text: decision.reply });
     console.log(`  IA:   ${decision.reply.replace(/\n+/g, " / ")}`);
     if (guardReply(decision.reply)) problems.push(`sent a reply breaking a rule: ${decision.reply}`);
     if (decision.reply.length > 600) problems.push("reply longer than 600 characters");
+    // After the opening, the first reply must not greet or introduce itself again.
+    if (firstReply) {
+      const afterOpening = decision.reply.split("\n\n").slice(1).join(" ");
+      if (/\b(sou a|aqui é a|assistente virtual)\b/i.test(afterOpening)) problems.push("introduced itself twice");
+    }
+    if (decision.handoff && decision.reply.trim().endsWith("?")) problems.push("handoff message ends with a question");
     state = decision.state;
     handoff = decision.handoff;
   }

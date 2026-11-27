@@ -79,12 +79,13 @@ export async function testTurn(
 
   try {
     const closedNow = Boolean(operation.businessHours && !isWithinBusinessHours(new Date(), operation.businessHours));
+    const firstReply = !conversation.some((t) => t.from === "assistant");
     const turn = await model.respond({
-      system: buildSystemPrompt(settings, { closedNow }),
+      system: buildSystemPrompt(settings, { closedNow, firstReply }),
       conversation,
       fieldKeys: settings.fields.map((f) => f.key),
     });
-    const decision = applyModelTurn(state, turn, settings, { isFirstReply: !conversation.some((t) => t.from === "assistant") });
+    const decision = applyModelTurn(state, turn, settings, { isFirstReply: firstReply });
     return {
       ok: true,
       reply: decision.reply,
