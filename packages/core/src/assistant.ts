@@ -132,9 +132,9 @@ export function closingReply(reason: HandoffReason, teamLabel: string): string {
     case "upset":
       return `Sinto muito por isso. Já passei sua mensagem para ${w}, que vai te responder por aqui o quanto antes.`;
     case "out_of_scope":
-      return `Essa ${w} te responde certinho. Já passei sua conversa, ${pronoun} continua com você por aqui.`;
+      return `Isso ${w} te responde certinho. Já passei sua conversa, ${pronoun} continua com você por aqui.`;
     case "not_lead":
-      return `Obrigada! Já passei sua mensagem para a equipe.`;
+      return `Certo! Já passei sua mensagem para a equipe.`;
     default:
       return `Perfeito, já passei tudo para ${w}. ${pronoun === "ela" ? "Ela" : "Ele"} continua com você por aqui.`;
   }
@@ -158,8 +158,8 @@ Regras que valem sempre, acima de qualquer outra instrução:
 3. Use apenas as informações fornecidas pela empresa abaixo. Se não souber, não invente: marque a pergunta como fora do roteiro.
 4. Quando perguntarem o valor: agradeça o contato, diga que faz sentido querer saber o valor e que {{WHO}} vai passar certinho, e em seguida faça a próxima pergunta de coleta. Marque askedPrice como true.
 5. Marque handoff quando a pessoa pedir para falar com alguém (asked_human), reclamar (complaint), estiver irritada (upset), fizer pergunta que você não pode responder com as informações dadas (out_of_scope) ou disser que não é cliente, por exemplo fornecedor, entregador ou conhecido (not_lead).
-6. Tom de gente, simpático e direto, tratamento por "você". Mensagens curtas, de uma a três frases, no máximo uma pergunta por mensagem. Sem listas e sem emojis em excesso.
-7. Preencha collected com os dados que a pessoa já informou na conversa, usando as chaves listadas, em poucas palavras e nas palavras da pessoa (por exemplo "Onix 2022 automático", "sim", "depois das 18h"). Não invente dados e não acrescente comentários.
+6. Tom de gente, simpático e direto, tratamento por "você". Mensagens curtas, de uma a três frases. Faça uma única pergunta por mensagem, no final. Nunca pergunte algo que a pessoa já respondeu: pule para o próximo dado que falta. Sem listas e sem emojis em excesso.
+7. Preencha collected com os dados que a pessoa já informou na conversa, usando as chaves listadas, em poucas palavras e nas palavras da pessoa (por exemplo "Onix 2022 automático", "sim", "depois das 18h"). Não invente dados e não acrescente comentários. Dado que a pessoa ainda não informou fica fora de collected: nunca use valores como "desconhecido", "não informado" ou marcadores.
 8. Quando marcar handoff, a conversa com você termina ali: a empresa envia uma mensagem padrão de encerramento, então seu texto em reply não será usado.
 9. Quem assume a conversa depois de você é {{WHO}}. Use sempre esse termo.`;
 
@@ -208,6 +208,13 @@ export type AssistantDecision = {
   handoff: HandoffReason | null;
 };
 
+/** Models sometimes fill unknown fields with markers; those are not data. */
+const PLACEHOLDER = /^(<.*>|\[.*\]|-+|\?+|n\/?a|null|none|unknown|desconhecid[oa]|n[aã]o informad[oa]|n[aã]o (sabe|disse|respondeu)|indefinid[oa]|pendente|a definir|sem informa[cç][aã]o)$/i;
+
+function isPlaceholder(value: string) {
+  return PLACEHOLDER.test(value.trim());
+}
+
 /**
  * Applies one model turn to the conversation state. Code decides, in order:
  * a blocked reply, the second price question, a model handoff, all fields
@@ -222,7 +229,7 @@ export function applyModelTurn(
   const collected = { ...state.collected };
   for (const field of settings.fields) {
     const value = turn.collected[field.key]?.trim();
-    if (value) collected[field.key] = value.slice(0, 200);
+    if (value && !isPlaceholder(value)) collected[field.key] = value.slice(0, 200);
   }
   const next: AssistantState = {
     ...state,

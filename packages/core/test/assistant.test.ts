@@ -101,6 +101,15 @@ describe("applyModelTurn", () => {
     expect(buildSystemPrompt(settings, { firstReply: false })).not.toContain("Não cumprimente");
   });
 
+  it("ignores placeholders the model puts in unknown fields", () => {
+    const d = applyModelTurn(state(), turn({ collected: { looking_for: "Onix 2022", trade_in: "<UNKNOWN>" } }), settings, { isFirstReply: false });
+    expect(d.state.collected).toEqual({ looking_for: "Onix 2022" });
+    expect(d.handoff).toBeNull();
+    for (const p of ["desconhecido", "Não informado", "N/A", "-", "[pendente]"]) {
+      expect(applyModelTurn(state(), turn({ collected: { trade_in: p } }), settings, { isFirstReply: false }).state.collected).toEqual({});
+    }
+  });
+
   it("ignores fields the client did not configure", () => {
     const d = applyModelTurn(state(), turn({ collected: { looking_for: "SUV", cpf: "123" } }), settings, { isFirstReply: false });
     expect(d.state.collected).toEqual({ looking_for: "SUV" });

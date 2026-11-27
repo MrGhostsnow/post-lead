@@ -132,12 +132,14 @@ for (const scenario of scenarios.filter((s) => !values.only || s.id.includes(val
       if (/\b(sou a|aqui é a|assistente virtual)\b/i.test(afterOpening)) problems.push("introduced itself twice");
     }
     if (decision.handoff && decision.reply.trim().endsWith("?")) problems.push("handoff message ends with a question");
+    if (!decision.handoff && (decision.reply.match(/\?/g) ?? []).length > 1) problems.push(`more than one question: ${decision.reply}`);
     state = decision.state;
     handoff = decision.handoff;
   }
 
   const first = conversation.find((t) => t.from === "assistant")?.text ?? "";
   if (!/assistente virtual/i.test(first)) problems.push("first reply does not say it is a virtual assistant");
+  if (/<|unknown|desconhecid|não informad/i.test(handoffSummary(state, scenario.settings))) problems.push("placeholder in summary");
   if (handoff) console.log(`  → passou: ${HANDOFF_LABEL[handoff]} | resumo: ${handoffSummary(state, scenario.settings)}`);
   else console.log("  → ainda conversando");
   if (scenario.expect.length && (!handoff || !scenario.expect.includes(handoff))) {
