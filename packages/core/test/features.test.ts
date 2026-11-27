@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  createWhatsAppClient,
   computeWeeklyReport,
   leadTemperature,
   nextOpening,
@@ -217,5 +218,37 @@ describe("leadTemperature", () => {
 
   it("is closed for finished leads", () => {
     expect(leadTemperature({ stage: "won", lastInboundAt: ago(90), lastBusinessReplyAt: null }, now, 5)).toBe("closed");
+  });
+});
+
+describe("WhatsApp client and the test number's allowed list", () => {
+  function fakeFetch(allowed: string) {
+    const calls: string[] = [];
+    const fetchImpl = (async (_url: string, init: { body: string }) => {
+      const to = JSON.parse(init.body).to as string;
+      calls.push(to);
+      const ok = to === allowed;
+      return {
+        ok,
+        status: ok ? 200 : 400,
+        json: async () =>
+          ok ? { messages: [{ id: "wamid.ok" }] } : { error: { message: "Recipient phone number not in allowed list", code: 131030 } },
+      };
+    }) as unknown as typeof fetch;
+    return { calls, fetchImpl };
+  }
+
+  it("retries with the ninth digit when the list has the other form", async () => {
+    const { calls, fetchImpl } = fakeFetch("5577988383289");
+    const client = createWhatsAppClient({ accessToken: "t", apiVersion: "v25.0", fetchImpl });
+    await expect(client.sendText("pn", "557788383289", "oi")).resolves.toBe("wamid.ok");
+    expect(calls).toEqual(["557788383289", "5577988383289"]);
+  });
+
+  it("gives up when neither form is allowed", async () => {
+    const { calls, fetchImpl } = fakeFetch("5511999999999");
+    const client = createWhatsAppClient({ accessToken: "t", apiVersion: "v25.0", fetchImpl });
+    await expect(client.sendText("pn", "557788383289", "oi")).rejects.toThrow("not in allowed list");
+    expect(calls).toHaveLength(2);
   });
 });

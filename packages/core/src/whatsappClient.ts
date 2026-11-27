@@ -1,6 +1,10 @@
 /**
  * Minimal client for sending messages through the WhatsApp Cloud API.
  */
+import { brazilPhoneVariants } from "./phone";
+
+/** Meta's "recipient not in allowed list", returned while sending from a test number. */
+const NOT_IN_ALLOWED_LIST = 131030;
 
 export type TemplateButtonParam = { index: number; payload: string };
 
@@ -41,7 +45,25 @@ export function createWhatsAppClient(options: {
 }): WhatsAppClient {
   const doFetch = options.fetchImpl ?? fetch;
 
+  /**
+   * Many Brazilian WhatsApp accounts still report their number without the
+   * ninth digit, while the test number's allowed list keeps the form the
+   * person typed. On that refusal, try the other form once.
+   */
   async function post(phoneNumberId: string, body: Record<string, unknown>): Promise<string> {
+    try {
+      return await postOnce(phoneNumberId, body);
+    } catch (error) {
+      const to = typeof body.to === "string" ? body.to : null;
+      const code = (error as WhatsAppApiError).details as { error?: { code?: number } } | null;
+      if (!(error instanceof WhatsAppApiError) || code?.error?.code !== NOT_IN_ALLOWED_LIST || !to) throw error;
+      const other = brazilPhoneVariants(to).find((v) => v !== to);
+      if (!other) throw error;
+      return postOnce(phoneNumberId, { ...body, to: other });
+    }
+  }
+
+  async function postOnce(phoneNumberId: string, body: Record<string, unknown>): Promise<string> {
     const response = await doFetch(
       `https://graph.facebook.com/${options.apiVersion}/${phoneNumberId}/messages`,
       {
