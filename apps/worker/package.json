@@ -8,7 +8,8 @@
     "start": "tsx src/index.ts",
     "typecheck": "tsc -p tsconfig.json",
     "seed:dev": "tsx --env-file=../../.env scripts/seed-dev.ts",
-    "add-member": "tsx --env-file=../../.env scripts/add-member.ts"
+    "add-member": "tsx --env-file=../../.env scripts/add-member.ts",
+    "try-assistant": "tsx --env-file=../../.env scripts/try-assistant.ts"
   },
   "dependencies": {
     "@post-lead/core": "*",
