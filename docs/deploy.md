@@ -88,6 +88,13 @@ App Dashboard > WhatsApp > Configuration:
 
 ## Testing with the Meta test number
 
+**The app must be subscribed to each WhatsApp Business Account** it serves,
+the test account included, or Meta never sends that account's messages to the
+webhook (the "Test" button in the dashboard still works, which hides the
+problem). Check and fix in the Graph API Explorer, app "Post Lead Dev":
+`GET <WABA_ID>/subscribed_apps` must list the app; if not,
+`POST <WABA_ID>/subscribed_apps`.
+
 Before any client number exists, one test number can be both the client's
 number and the tool's number:
 
