@@ -149,6 +149,11 @@ get the history later is to disconnect and connect the number again.
 - Webhooks are verified (`X-Hub-Signature-256`), stored once, then processed.
 - Server code bypasses row-level security, so every query filters by `operation_id`.
 
+## Deploy
+
+Supabase (database and login), Railway (worker, from the `Dockerfile`) and
+Vercel (panel and webhooks). Step by step, with every variable: `docs/deploy.md`.
+
 ## Agency panel
 
 `/panel` is for the agency team only. Login is a magic link from Supabase Auth;

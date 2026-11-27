@@ -104,7 +104,7 @@ export async function processPendingWebhooks(
     try {
       for (const event of row.provider === WEBHOOK_PROVIDERS.whatsapp ? parseWhatsAppWebhook(row.payload) : []) {
         if (event.kind === "inbound_message") {
-          if (event.phoneNumberId === options.toolPhoneNumberId) await handlePersonReply(db, event);
+          if (await isFromTeam(db, event, options.toolPhoneNumberId)) await handlePersonReply(db, event);
           else await handleLeadMessage(db, event);
         } else if (event.kind === "business_echo") {
           await handleBusinessEcho(db, event);
@@ -131,6 +131,23 @@ export async function processPendingWebhooks(
 async function operationByPhoneNumberId(db: Database, phoneNumberId: string) {
   const [operation] = await db.select().from(operations).where(eq(operations.phoneNumberId, phoneNumberId));
   return operation ?? null;
+}
+
+/**
+ * Messages to the tool's number come from sellers and managers. A client's
+ * number may also be the tool's number (one test number doing both jobs before
+ * the real numbers exist): then the sender decides, and anyone who is not on a
+ * team is a lead.
+ */
+async function isFromTeam(db: Database, event: InboundMessageEvent, toolPhoneNumberId: string) {
+  if (event.phoneNumberId !== toolPhoneNumberId) return false;
+  if (!(await operationByPhoneNumberId(db, event.phoneNumberId))) return true;
+  const [person] = await db
+    .select({ id: people.id })
+    .from(people)
+    .where(and(inArray(people.whatsappNumber, brazilPhoneVariants(event.from)), eq(people.active, true)))
+    .limit(1);
+  return Boolean(person);
 }
 
 async function findContact(db: Database, operationId: string, phone: string) {

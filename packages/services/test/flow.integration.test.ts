@@ -250,4 +250,24 @@ describe.skipIf(!url)("lead flow", () => {
     await runDueActions(ctx);
     expect(wa.texts.filter((t) => t.to === phone)).toHaveLength(1);
   }, 30_000);
+
+  it("runs on a single test number: the team's messages are replies, anyone else is a lead", async () => {
+    const { opId } = await setup("single");
+    // The client's number is the tool's number.
+    await db.update(operations).set({ phoneNumberId: TOOL }).where(eq(operations.id, opId));
+    await db.insert(people).values({ operationId: opId, name: "Bia", whatsappNumber: "5577911116666", role: "seller" });
+    const lead = "5577986669999";
+
+    await leadWrites(TOOL, lead, "Oi, quero saber mais");
+    const [created] = await db.select().from(leads).where(eq(leads.operationId, opId));
+    expect(created?.contactPhone).toBe(lead);
+
+    await tap("5577911116666", buttonPayload("won", created!.id));
+    const [won] = await db.select().from(leads).where(eq(leads.id, created!.id));
+    expect(won?.stage).toBe("won");
+    expect(await db.select().from(leads).where(eq(leads.contactPhone, "5577911116666"))).toHaveLength(0);
+
+    // Leave the tool number free for the other tests.
+    await db.update(operations).set({ phoneNumberId: null }).where(eq(operations.id, opId));
+  }, 30_000);
 });

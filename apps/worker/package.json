@@ -9,7 +9,9 @@
     "typecheck": "tsc -p tsconfig.json",
     "seed:dev": "tsx --env-file=../../.env scripts/seed-dev.ts",
     "add-member": "tsx --env-file=../../.env scripts/add-member.ts",
-    "try-assistant": "tsx --env-file=../../.env scripts/try-assistant.ts"
+    "try-assistant": "tsx --env-file=../../.env scripts/try-assistant.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "start:deploy": "tsx scripts/migrate.ts && tsx src/index.ts"
   },
   "dependencies": {
     "@post-lead/core": "*",
