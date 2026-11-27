@@ -100,3 +100,9 @@ legend { font-weight: 600; padding: 0 6px; }
 .bubble.lead { align-self: flex-end; background: #dcf8c6; }
 .bubble.ai { align-self: flex-start; background: #fff; border: 1px solid #e6e6e3; }
 .small-button { padding: 4px 10px; font-size: 13px; }
+
+.legal { padding: 32px 16px; display: grid; justify-items: center; }
+.legal-card { width: 100%; max-width: 760px; display: grid; gap: 12px; line-height: 1.6; }
+.legal-card h2 { font-size: 1.05rem; margin: 12px 0 0; }
+.legal-card p, .legal-card ul { margin: 0; }
+.legal-card ul { padding-left: 20px; display: grid; gap: 6px; }
