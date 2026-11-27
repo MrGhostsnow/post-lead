@@ -214,13 +214,19 @@ const ASKS_HUMAN =
 const COMPLAINT =
   /\b(reclama[cç][aã]o|reclamar|procon|reclame aqui|processar|advogado|absurdo|vergonha|p[eé]ssim[oa]|horr[ií]vel|lament[aá]vel|descaso|enganad[oa]|golpe|estrag(ou|ado|ada)|n[aã]o funciona|defeito|insatisfeit[oa]|quero (meu dinheiro|reembolso|estorno)|devolu[cç][aã]o|cancelar)\b/i;
 
+/** Questions only a person may answer: stock, availability, deadlines. */
+const RESTRICTED_QUESTION =
+  /\b(estoque|dispon[ií]ve(l|is)|pronta entrega|ainda (tem|t[eê]m|existe|est[aá])|tem ou n[aã]o tem|j[aá] vendeu|foi vendid[oa]|prazo|quantos dias|quanto tempo (demora|leva)|quando (chega|fica pronto|fica pronta|entrega|entregam)|entrega em|demora quanto)\b/i;
+
 /**
  * Backstop for the cases that must never stay with the assistant: someone
- * asking for a person or complaining. Code catches what the model misses.
+ * complaining, asking for a person, or asking about stock or deadlines.
+ * Code catches what the model misses.
  */
-export function detectEscalation(leadText: string): "asked_human" | "complaint" | null {
+export function detectEscalation(leadText: string): "asked_human" | "complaint" | "out_of_scope" | null {
   if (COMPLAINT.test(leadText)) return "complaint";
   if (ASKS_HUMAN.test(leadText)) return "asked_human";
+  if (RESTRICTED_QUESTION.test(leadText)) return "out_of_scope";
   return null;
 }
 

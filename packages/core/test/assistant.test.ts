@@ -190,6 +190,10 @@ describe("detectEscalation", () => {
     ["Me liga pra mim por favor", "asked_human"],
     ["Posso falar com o gerente?", "asked_human"],
     ["não quero falar com robô", "asked_human"],
+    ["Vocês ainda têm o Onix prata do anúncio?", "out_of_scope"],
+    ["Mas tem ou não tem?", "out_of_scope"],
+    ["Fica pronto em quantos dias?", "out_of_scope"],
+    ["É pronta entrega?", "out_of_scope"],
     ["Tem SUV automático?", null],
     ["Qual o horário de vocês?", null],
   ])("%s → %s", (text, expected) => {
