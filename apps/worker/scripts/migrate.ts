@@ -1,5 +1,5 @@
 /** Runs on every deploy before the worker starts. Uses the direct (non-pooled) connection. */
-import { runMigrations } from "@post-lead/db";
+import { runMigrations } from "@post-lead/db/migrate";
 
 const url = process.env.DATABASE_URL_DIRECT ?? process.env.DATABASE_URL;
 if (!url) {
