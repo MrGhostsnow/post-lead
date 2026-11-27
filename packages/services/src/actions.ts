@@ -8,6 +8,7 @@ import {
   readAssistantSettings,
   readAssistantState,
   historyLeadTexts,
+  leadTextSinceAssistant,
   type AssistantModel,
   type FaqExtractor,
   type AssistantState,
@@ -320,7 +321,7 @@ async function assistantReply(ctx: ActionContext, lead: Lead, operation: Operati
       conversation,
       fieldKeys: settings.fields.map((f) => f.key),
     });
-    decision = applyModelTurn(state, turn, settings, { isFirstReply });
+    decision = applyModelTurn(state, turn, settings, { isFirstReply, leadText: leadTextSinceAssistant(conversation) });
   } catch (error) {
     // Nobody is left without an answer: the fixed reply goes out and a person takes over.
     if (isFirstReply) await firstContact(ctx, lead, operation);

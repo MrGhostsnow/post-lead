@@ -7,6 +7,8 @@ import {
   handoffSummary,
   HANDOFF_REPLY,
   newAssistantState,
+  detectEscalation,
+  leadTextSinceAssistant,
   parseModelTurn,
   historyBaseline,
   historyLeadTexts,
@@ -101,6 +103,13 @@ describe("applyModelTurn", () => {
     expect(buildSystemPrompt(settings, { firstReply: false })).not.toContain("Não cumprimente");
   });
 
+  it("hands over a complaint or a request for a person even when the model does not", () => {
+    const quiet = turn({ reply: "Sinto muito. Você já é paciente?" });
+    expect(applyModelTurn(state(), quiet, settings, { isFirstReply: false, leadText: "Fiz um clareamento aí e ficou horrível" }).handoff).toBe("complaint");
+    expect(applyModelTurn(state(), quiet, settings, { isFirstReply: false, leadText: "Quero falar com uma pessoa, não com robô" }).handoff).toBe("asked_human");
+    expect(applyModelTurn(state(), quiet, settings, { isFirstReply: false, leadText: "Quero um SUV automático" }).handoff).toBeNull();
+  });
+
   it("ignores placeholders the model puts in unknown fields", () => {
     const d = applyModelTurn(state(), turn({ collected: { looking_for: "Onix 2022", trade_in: "<UNKNOWN>" } }), settings, { isFirstReply: false });
     expect(d.state.collected).toEqual({ looking_for: "Onix 2022" });
@@ -170,5 +179,29 @@ describe("historyLeadTexts", () => {
       ] }] } }] }],
     };
     expect(historyLeadTexts([payload], new Set(["2"]))).toEqual(["Oi", "Aceita cartão?"]);
+  });
+});
+
+describe("detectEscalation", () => {
+  it.each([
+    ["Vou no Procon", "complaint"],
+    ["Que atendimento péssimo", "complaint"],
+    ["quero meu dinheiro de volta", "complaint"],
+    ["Me liga pra mim por favor", "asked_human"],
+    ["Posso falar com o gerente?", "asked_human"],
+    ["não quero falar com robô", "asked_human"],
+    ["Tem SUV automático?", null],
+    ["Qual o horário de vocês?", null],
+  ])("%s → %s", (text, expected) => {
+    expect(detectEscalation(text)).toBe(expected);
+  });
+
+  it("only looks at what the lead wrote since the assistant last spoke", () => {
+    expect(leadTextSinceAssistant([
+      { from: "lead", text: "péssimo" },
+      { from: "assistant", text: "?" },
+      { from: "lead", text: "SUV" },
+      { from: "lead", text: "automático" },
+    ])).toBe("SUV\nautomático");
   });
 });

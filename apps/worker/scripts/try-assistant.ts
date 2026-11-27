@@ -16,6 +16,7 @@ import {
   guardReply,
   handoffSummary,
   HANDOFF_LABEL,
+  leadTextSinceAssistant,
   newAssistantState,
   type AssistantSettings,
   type ConversationTurn,
@@ -93,6 +94,7 @@ const scenarios: Scenario[] = [
   { id: "veiculos-completo", settings: veiculos, lead: ["Oi, vi o anúncio do Onix", "Um Onix 2022 automático", "Tenho um Gol 2015", "Sim, quero financiar", "Depois das 18h"], expect: ["complete"] },
   { id: "veiculos-preco-2x", settings: veiculos, lead: ["Quanto custa o Onix 2022?", "Mas qual o valor? Só quero saber o preço"], expect: ["price_insist"] },
   { id: "veiculos-estoque", settings: veiculos, lead: ["Vocês ainda têm o Onix prata do anúncio?", "Mas tem ou não tem?"], expect: ["out_of_scope", "asked_human", "price_insist", "guard"] },
+  { id: "veiculos-irritado", settings: veiculos, lead: ["Já mandei mensagem três vezes e ninguém responde, que descaso"], expect: ["complaint", "upset"] },
   { id: "clinica-atendente", settings: clinica, lead: ["Quero falar com uma pessoa, não com robô"], expect: ["asked_human"] },
   { id: "clinica-reclamacao", settings: clinica, lead: ["Fiz um clareamento aí e ficou horrível, quero resolver isso"], expect: ["complaint", "upset"] },
   { id: "clinica-prazo", settings: clinica, lead: ["Quanto tempo demora um clareamento? Fica pronto em quantos dias?"], expect: ["out_of_scope", "asked_human"] },
@@ -121,7 +123,7 @@ for (const scenario of scenarios.filter((s) => !values.only || s.id.includes(val
     // The raw model text is checked too: the guard must catch anything that slips.
     const raw = guardReply(turn.reply);
     if (raw) console.log(`  (modelo tentou: "${turn.reply}" → bloqueado: ${raw})`);
-    const decision = applyModelTurn(state, turn, scenario.settings, { isFirstReply: firstReply });
+    const decision = applyModelTurn(state, turn, scenario.settings, { isFirstReply: firstReply, leadText: leadTextSinceAssistant(conversation) });
     conversation.push({ from: "assistant", text: decision.reply });
     console.log(`  IA:   ${decision.reply.replace(/\n+/g, " / ")}`);
     if (guardReply(decision.reply)) problems.push(`sent a reply breaking a rule: ${decision.reply}`);

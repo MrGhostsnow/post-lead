@@ -7,6 +7,7 @@ import {
   handoffSummary,
   HANDOFF_LABEL,
   isWithinBusinessHours,
+  leadTextSinceAssistant,
   newAssistantState,
   readAssistantSettings,
   type AssistantState,
@@ -85,7 +86,7 @@ export async function testTurn(
       conversation,
       fieldKeys: settings.fields.map((f) => f.key),
     });
-    const decision = applyModelTurn(state, turn, settings, { isFirstReply: firstReply });
+    const decision = applyModelTurn(state, turn, settings, { isFirstReply: firstReply, leadText: leadTextSinceAssistant(conversation) });
     return {
       ok: true,
       reply: decision.reply,

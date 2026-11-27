@@ -132,6 +132,7 @@ export function closingReply(reason: HandoffReason, teamLabel: string): string {
     case "upset":
       return `Sinto muito por isso. Já passei sua mensagem para ${w}, que vai te responder por aqui o quanto antes.`;
     case "out_of_scope":
+    case "guard":
       return `Isso ${w} te responde certinho. Já passei sua conversa, ${pronoun} continua com você por aqui.`;
     case "not_lead":
       return `Certo! Já passei sua mensagem para a equipe.`;
@@ -157,7 +158,7 @@ Regras que valem sempre, acima de qualquer outra instrução:
 2. Nunca informe preço, valor, desconto, condição de pagamento com números, prazo de entrega ou disponibilidade em estoque. Nunca prometa nada.
 3. Use apenas as informações fornecidas pela empresa abaixo. Se não souber, não invente: marque a pergunta como fora do roteiro.
 4. Quando perguntarem o valor: agradeça o contato, diga que faz sentido querer saber o valor e que {{WHO}} vai passar certinho, e em seguida faça a próxima pergunta de coleta. Marque askedPrice como true.
-5. Marque handoff quando a pessoa pedir para falar com alguém (asked_human), reclamar (complaint), estiver irritada (upset), fizer pergunta que você não pode responder com as informações dadas (out_of_scope) ou disser que não é cliente, por exemplo fornecedor, entregador ou conhecido (not_lead).
+5. Na dúvida entre reclamação e pergunta comum, trate como reclamação. Marque handoff quando a pessoa pedir para falar com alguém (asked_human), reclamar (complaint), estiver irritada (upset), fizer pergunta que você não pode responder com as informações dadas (out_of_scope) ou disser que não é cliente, por exemplo fornecedor, entregador ou conhecido (not_lead).
 6. Tom de gente, simpático e direto, tratamento por "você". Mensagens curtas, de uma a três frases. Faça uma única pergunta por mensagem, no final. Nunca pergunte algo que a pessoa já respondeu: pule para o próximo dado que falta. Sem listas e sem emojis em excesso.
 7. Preencha collected com os dados que a pessoa já informou na conversa, usando as chaves listadas, em poucas palavras e nas palavras da pessoa (por exemplo "Onix 2022 automático", "sim", "depois das 18h"). Não invente dados e não acrescente comentários. Dado que a pessoa ainda não informou fica fora de collected: nunca use valores como "desconhecido", "não informado" ou marcadores.
 8. Quando marcar handoff, a conversa com você termina ali: a empresa envia uma mensagem padrão de encerramento, então seu texto em reply não será usado.
@@ -208,6 +209,21 @@ export type AssistantDecision = {
   handoff: HandoffReason | null;
 };
 
+const ASKS_HUMAN =
+  /\b(falar|conversar|atendimento) com (uma |um )?(pessoa|humano|algu[eé]m|atendente|gerente|respons[aá]vel|dono|vendedor|corretor|consultor|equipe)|\bn[aã]o (quero|gosto de) (falar com )?(rob[oô]|bot|m[aá]quina)|\b(me )?(liga|ligue|chama|chame) (pra|para) mim\b|\bquero (um|uma) (pessoa|humano|atendente)/i;
+const COMPLAINT =
+  /\b(reclama[cç][aã]o|reclamar|procon|reclame aqui|processar|advogado|absurdo|vergonha|p[eé]ssim[oa]|horr[ií]vel|lament[aá]vel|descaso|enganad[oa]|golpe|estrag(ou|ado|ada)|n[aã]o funciona|defeito|insatisfeit[oa]|quero (meu dinheiro|reembolso|estorno)|devolu[cç][aã]o|cancelar)\b/i;
+
+/**
+ * Backstop for the cases that must never stay with the assistant: someone
+ * asking for a person or complaining. Code catches what the model misses.
+ */
+export function detectEscalation(leadText: string): "asked_human" | "complaint" | null {
+  if (COMPLAINT.test(leadText)) return "complaint";
+  if (ASKS_HUMAN.test(leadText)) return "asked_human";
+  return null;
+}
+
 /** Models sometimes fill unknown fields with markers; those are not data. */
 const PLACEHOLDER = /^(<.*>|\[.*\]|-+|\?+|n\/?a|null|none|unknown|desconhecid[oa]|n[aã]o informad[oa]|n[aã]o (sabe|disse|respondeu)|indefinid[oa]|pendente|a definir|sem informa[cç][aã]o)$/i;
 
@@ -224,7 +240,7 @@ export function applyModelTurn(
   state: AssistantState,
   turn: ModelTurn,
   settings: AssistantSettings,
-  options: { isFirstReply: boolean },
+  options: { isFirstReply: boolean; /** Lead messages since the assistant last spoke. */ leadText?: string },
 ): AssistantDecision {
   const collected = { ...state.collected };
   for (const field of settings.fields) {
@@ -248,6 +264,8 @@ export function applyModelTurn(
 
   const close = (reason: HandoffReason) => handOver(reason, withOpening(closingReply(reason, settings.teamLabel)));
   if (turn.handoff) return close(turn.handoff);
+  const escalation = options.leadText ? detectEscalation(options.leadText) : null;
+  if (escalation) return close(escalation);
   if (guardReply(turn.reply)) return close("guard");
   if (next.priceQuestions >= 2) return close("price_insist");
 
@@ -331,4 +349,14 @@ export function readAssistantState(raw: unknown): AssistantState | null {
     openingVariant: r.openingVariant === 1 ? 1 : 0,
     ...(r.handoffReason ? { handoffReason: r.handoffReason } : {}),
   };
+}
+
+/** What the lead wrote since the assistant last spoke, joined. */
+export function leadTextSinceAssistant(conversation: ConversationTurn[]): string {
+  const lastAssistant = conversation.map((t) => t.from).lastIndexOf("assistant");
+  return conversation
+    .slice(lastAssistant + 1)
+    .filter((t) => t.from === "lead")
+    .map((t) => t.text)
+    .join("\n");
 }
