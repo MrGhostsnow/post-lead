@@ -210,7 +210,7 @@ export type AssistantDecision = {
 };
 
 const ASKS_HUMAN =
-  /\b(falar|conversar|atendimento) com (uma |um )?(pessoa|humano|algu[eé]m|atendente|gerente|respons[aá]vel|dono|vendedor|corretor|consultor|equipe)|\bn[aã]o (quero|gosto de) (falar com )?(rob[oô]|bot|m[aá]quina)|\b(me )?(liga|ligue|chama|chame) (pra|para) mim\b|\bquero (um|uma) (pessoa|humano|atendente)/i;
+  /\b(falar|conversar|atendimento) com (uma |um |o |a )?(pessoa|humano|algu[eé]m|atendente|gerente|respons[aá]vel|dono|vendedor|corretor|consultor|equipe)|\bn[aã]o (quero|gosto de) (falar com )?(rob[oô]|bot|m[aá]quina)|\b(me )?(liga|ligue|chama|chame) (pra|para) mim\b|\bquero (um|uma) (pessoa|humano|atendente)/i;
 const COMPLAINT =
   /\b(reclama[cç][aã]o|reclamar|procon|reclame aqui|processar|advogado|absurdo|vergonha|p[eé]ssim[oa]|horr[ií]vel|lament[aá]vel|descaso|enganad[oa]|golpe|estrag(ou|ado|ada)|n[aã]o funciona|defeito|insatisfeit[oa]|quero (meu dinheiro|reembolso|estorno)|devolu[cç][aã]o|cancelar)\b/i;
 
