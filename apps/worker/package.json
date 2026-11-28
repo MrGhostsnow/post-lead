@@ -11,7 +11,8 @@
     "add-member": "tsx --env-file=../../.env scripts/add-member.ts",
     "try-assistant": "tsx --env-file=../../.env scripts/try-assistant.ts",
     "migrate": "tsx scripts/migrate.ts",
-    "start:deploy": "tsx scripts/migrate.ts && tsx src/index.ts"
+    "start:deploy": "tsx scripts/migrate.ts && tsx src/index.ts",
+    "sync-templates": "tsx --env-file-if-exists=../../.env scripts/sync-templates.ts"
   },
   "dependencies": {
     "@post-lead/core": "*",

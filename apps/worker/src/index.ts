@@ -4,7 +4,13 @@
  * one instance in the MVP; claiming uses SKIP LOCKED, but there is no lease
  * for crashed jobs other than recoverStuckActions at startup.
  */
-import { createClaudeAssistant, createClaudeFaqExtractor, createWhatsAppClient } from "@post-lead/core";
+import {
+  createClaudeAssistant,
+  createClaudeFaqExtractor,
+  createTemplateManager,
+  createWhatsAppClient,
+  syncTemplates,
+} from "@post-lead/core";
 import { createDb } from "@post-lead/db";
 import {
   ensureWeeklyReportsScheduled,
@@ -59,8 +65,27 @@ async function tick() {
   }
 }
 
+/**
+ * Creates the templates the tool's account is missing (team notices, plus the
+ * lead messages for single-number testing). Safe to run on every start.
+ */
+async function syncToolTemplates() {
+  const wabaId = process.env.TOOL_WABA_ID;
+  const accessToken = process.env.META_ACCESS_TOKEN;
+  if (!wabaId || !accessToken) return;
+  try {
+    const results = await syncTemplates(createTemplateManager({ accessToken, apiVersion }), wabaId, ["team", "lead"]);
+    for (const r of results) {
+      console.log(`[templates] ${r.name}: ${r.result}${r.status ? ` (${r.status})` : ""}${r.error ? ` — ${r.error}` : ""}`);
+    }
+  } catch (error) {
+    console.error("[templates] sync failed", error);
+  }
+}
+
 async function main() {
   await recoverStuckActions(db);
+  await syncToolTemplates();
   console.log(
     `[worker] started${sandbox ? " in SANDBOX mode (nothing is sent to Meta)" : ""}${assistant ? "" : " (assistant off: ANTHROPIC_API_KEY not set)"}`,
   );

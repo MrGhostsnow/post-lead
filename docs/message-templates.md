@@ -1,9 +1,21 @@
-# Message templates (drafts)
+# Message templates
 
 Messages sent more than 24 hours after the lead's last message must be approved
 templates. The first reply to a new lead is not one of them: the lead wrote
-first, so it is free text set per operation. Submit these in WhatsApp Manager
-once the business is verified. Names must match the code.
+first, so it is free text set per operation.
+
+**The source of truth is `packages/core/src/templates.ts`** (texts, examples,
+buttons, category); this page explains them. Templates belong to a WhatsApp
+Business Account, so they are created through the Graph API, not by hand:
+
+- the tool's account: the worker creates the missing ones at start when
+  `TOOL_WABA_ID` is set (team notices, plus the lead messages for
+  single-number testing), and logs each status as `[templates] name: …`;
+- any account, by hand: `npm run sync-templates -w @post-lead/worker -- --waba <WABA_ID> --audience team|lead|all`;
+- each client's account: lead messages, created when the client connects.
+
+Meta rules checked in code (`templateProblems`): the body may not start or end
+with a variable, every variable needs an example.
 Meta decides the final category; marketing costs about ten times more than
 utility in Brazil, so keep lead messages informational where possible.
 
@@ -23,7 +35,7 @@ a number that is not a lead may receive it before the seller taps "Não é lead"
 
 ### `follow_up_1` (about 1 hour later)
 
-> {{1}}, ainda posso te ajudar? É só responder esta mensagem que um atendente continua com você.
+> Oi, {{1}}! Ainda posso te ajudar? É só responder esta mensagem que um atendente continua com você.
 
 ### `follow_up_2` (about 1 day later)
 
@@ -55,8 +67,8 @@ recipient's own order or account), so submit them in that category; utility is
 rejected. To keep the cost down, the worker sends the same text as free text,
 with reply buttons, whenever the person wrote to the tool's number in the last
 24 hours (`people.last_inbound_at`; any button tap counts). The template is only
-used when that window is closed. Keep `notificationText()` in step with the
-approved texts below.
+used when that window is closed. The free text is rendered from the same
+definitions, so it always matches the approved template.
 
 ### `notify_new_lead`
 
@@ -68,11 +80,11 @@ Quick-reply button: **Não é lead** (stops everything and ignores the number fo
 
 ### `notify_lead_replied`
 
-> {{1}} respondeu. Abra o WhatsApp Business para continuar o atendimento.
+> O lead {{1}} respondeu. Abra o WhatsApp Business para continuar o atendimento.
 
 ### `notify_owner_reminder`
 
-> {{1}} está esperando resposta há {{2}} minutos.
+> O lead {{1}} está esperando resposta há {{2}} minutos. Abra o WhatsApp Business para responder.
 
 ### `notify_manager_alert`
 
@@ -106,3 +118,4 @@ Quick-reply buttons, in this order: **Ganhou**, **Perdeu**, **Segue negociando**
 > Tempo para a equipe responder (mediana): {{5}}
 > Responderam e ficaram sem resposta da equipe: {{6}}
 > Vendas fechadas: {{7}}
+> Boa semana!

@@ -110,3 +110,11 @@ number and the tool's number:
 
 Business verification must be approved first: before it, Meta blocks sending
 with error 131031.
+
+## Message templates
+
+Set `TOOL_WABA_ID` on the worker (the WhatsApp Business Account of the tool's
+number). On every start the worker creates the templates that account is
+missing and logs their status (`[templates] notify_new_lead: exists (APPROVED)`).
+`META_ACCESS_TOKEN` needs `whatsapp_business_management` on that account.
+See docs/message-templates.md.

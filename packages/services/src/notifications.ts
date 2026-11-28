@@ -1,3 +1,4 @@
+import { renderTemplate, TEMPLATE_DEFINITIONS, templateDefinition } from "@post-lead/core";
 /**
  * Templates sent from the tool's own number to sellers and managers.
  * Each one must be created and approved in WhatsApp Manager under these names,
@@ -38,41 +39,19 @@ export const NOTIFICATION_TEMPLATES = {
 export type NotificationTemplate = (typeof NOTIFICATION_TEMPLATES)[keyof typeof NOTIFICATION_TEMPLATES];
 
 /** Button titles, in the same order as the template's quick-reply buttons. */
-export const NOTIFICATION_BUTTON_TITLES: Partial<Record<NotificationTemplate, string[]>> = {
-  notify_new_lead: ["Não é lead"],
-  notify_reengagement: ["Cancelar", "Ganhou", "Perdeu"],
-  ask_lead_outcome: ["Ganhou", "Perdeu", "Segue negociando"],
-};
+export const NOTIFICATION_BUTTON_TITLES: Partial<Record<NotificationTemplate, string[]>> = Object.fromEntries(
+  TEMPLATE_DEFINITIONS.filter((t) => t.buttons?.length).map((t) => [t.name, t.buttons!]),
+);
 
 /**
  * The same notice as free text, used when the person wrote to the tool's
- * number in the last 24 hours. Keep in step with the approved templates.
+ * number in the last 24 hours. Rendered from the template definition, so it
+ * always matches what Meta approved.
  */
 export function notificationText(template: NotificationTemplate, p: string[]): string {
-  switch (template) {
-    case "notify_new_lead":
-      return `Novo lead: ${p[0]} (${p[1]}), ${p[2]}. Resumo: ${p[3]}. Abra o WhatsApp Business para continuar.`;
-    case "notify_lead_replied":
-      return `${p[0]} respondeu. Abra o WhatsApp Business para continuar o atendimento.`;
-    case "notify_owner_reminder":
-      return `${p[0]} está esperando resposta há ${p[1]} minutos.`;
-    case "notify_manager_alert":
-      return `Atenção: ${p[0]} está sem resposta. Responsável: ${p[1]}. Tempo de espera: ${p[2]} minutos.`;
-    case "notify_reengagement":
-      return `A conversa com ${p[0]} está parada há ${p[1]} dias. Vou retomar o contato ${p[2]}. Se você combinou algo com o cliente, toque em Cancelar.`;
-    case "ask_lead_outcome":
-      return `Como ficou o atendimento de ${p[0]}?`;
-    case "weekly_report":
-      return [
-        `Resumo da semana — ${p[0]}`,
-        `Leads recebidos: ${p[1]}`,
-        `Contatados em até 1 minuto: ${p[2]}`,
-        `Escreveram: ${p[3]}`,
-        `Tempo para a equipe responder (mediana): ${p[4]}`,
-        `Responderam e ficaram sem resposta da equipe: ${p[5]}`,
-        `Vendas fechadas: ${p[6]}`,
-      ].join("\n");
-  }
+  const definition = templateDefinition(template);
+  if (!definition) throw new Error(`No template definition for ${template}`);
+  return renderTemplate(definition, p);
 }
 
 /** What a button in a notification does. The lead id travels in the payload. */
