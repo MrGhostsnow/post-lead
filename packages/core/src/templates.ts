@@ -74,7 +74,7 @@ export const TEMPLATE_DEFINITIONS: TemplateDefinition[] = [
     audience: "team",
     category: "MARKETING",
     language: "pt_BR",
-    body: "Como ficou o atendimento de {{1}}?",
+    body: "Como ficou o atendimento de {{1}}? Toque em uma das opções abaixo para registrar o resultado.",
     examples: ["Maria"],
     buttons: ["Ganhou", "Perdeu", "Segue negociando"],
   },
@@ -176,8 +176,15 @@ export function createTemplateManager(options: { accessToken: string; apiVersion
 
   async function call<T>(url: string, init?: RequestInit): Promise<T> {
     const response = await doFetch(url, { ...init, headers });
-    const json = (await response.json().catch(() => null)) as (T & { error?: { message?: string } }) | null;
-    if (!response.ok || !json) throw new Error(json?.error?.message ?? `Graph API error ${response.status}`);
+    const json = (await response.json().catch(() => null)) as
+      | (T & { error?: { message?: string; error_user_title?: string; error_user_msg?: string } })
+      | null;
+    if (!response.ok || !json) {
+      // Meta puts the useful part ("too many variables for its length") in error_user_msg.
+      const e = json?.error;
+      const detail = [e?.message, e?.error_user_title, e?.error_user_msg].filter(Boolean).join(" — ");
+      throw new Error(detail || `Graph API error ${response.status}`);
+    }
     return json;
   }
 

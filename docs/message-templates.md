@@ -105,7 +105,7 @@ window that tap opened:
 
 ### `ask_lead_outcome`
 
-> Como ficou o atendimento de {{1}}?
+> Como ficou o atendimento de {{1}}? Toque em uma das opções abaixo para registrar o resultado.
 
 Quick-reply buttons, in this order: **Ganhou**, **Perdeu**, **Segue negociando**.
 

@@ -25,7 +25,7 @@ describe("template definitions", () => {
       language: "pt_BR",
       category: "MARKETING",
       components: [
-        { type: "BODY", text: "Como ficou o atendimento de {{1}}?", example: { body_text: [["Maria"]] } },
+        { type: "BODY", text: "Como ficou o atendimento de {{1}}? Toque em uma das opções abaixo para registrar o resultado.", example: { body_text: [["Maria"]] } },
         {
           type: "BUTTONS",
           buttons: [
