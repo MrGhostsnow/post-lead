@@ -11,3 +11,5 @@ export * from "./assistant";
 export * from "./claudeAssistant";
 export * from "./history";
 export * from "./templates";
+export * from "./secretBox";
+export * from "./whatsappOnboarding";

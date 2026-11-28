@@ -5,3 +5,4 @@ export * from "./notifications";
 export * from "./scheduling";
 export * from "./team";
 export * from "./sandbox";
+export * from "./whatsappConnection";

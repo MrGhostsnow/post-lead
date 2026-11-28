@@ -15,6 +15,7 @@ import { createDb } from "@post-lead/db";
 import {
   ensureWeeklyReportsScheduled,
   createSandboxWhatsApp,
+  createTokenResolver,
   processPendingWebhooks,
   recoverStuckActions,
   runDueActions,
@@ -30,9 +31,17 @@ const apiVersion = required("GRAPH_API_VERSION");
 const db = createDb();
 // Sandbox: nothing goes to Meta; the panel shows what would have been sent.
 const sandbox = process.env.WHATSAPP_SANDBOX === "true";
+// Clients connected through Embedded Signup send with their own token (encrypted
+// in the database); the tool's number and older clients use META_ACCESS_TOKEN.
 const whatsapp = sandbox
   ? createSandboxWhatsApp(db)
-  : createWhatsAppClient({ accessToken: required("META_ACCESS_TOKEN"), apiVersion });
+  : createWhatsAppClient({
+      accessToken: createTokenResolver(db, {
+        fallbackToken: required("META_ACCESS_TOKEN"),
+        encryptionKey: process.env.TOKEN_ENCRYPTION_KEY,
+      }),
+      apiVersion,
+    });
 const toolPhoneNumberId = required("TOOL_PHONE_NUMBER_ID");
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000);
 

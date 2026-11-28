@@ -71,6 +71,13 @@
       "when": 1795825188183,
       "tag": "0009_skinny_silver_centurion",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1795878204926,
+      "tag": "0010_zippy_rachel_grey",
+      "breakpoints": true
     }
   ]
 }

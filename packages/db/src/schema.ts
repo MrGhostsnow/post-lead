@@ -106,6 +106,17 @@ export const operations = pgTable("operations", {
   wabaId: text("waba_id"),
   phoneNumberId: text("phone_number_id").unique(),
   displayPhone: text("display_phone"),
+  /**
+   * The client's business token from Embedded Signup, encrypted with
+   * TOKEN_ENCRYPTION_KEY (see core/secretBox). Messages from the client's
+   * number are sent with it. Null: the number is on the tool's own account.
+   */
+  accessTokenEncrypted: text("access_token_encrypted"),
+  /** Number shared with the WhatsApp Business app (coexistence). */
+  coexistence: boolean("coexistence").notNull().default(false),
+  whatsappConnectedAt: timestamp("whatsapp_connected_at", { withTimezone: true }),
+  /** History and contacts can be requested once, within 24 hours of connecting. */
+  historySyncRequestedAt: timestamp("history_sync_requested_at", { withTimezone: true }),
   firstResponseMinutes: integer("first_response_minutes").notNull().default(5),
   staleDays: integer("stale_days").notNull().default(3),
   cadence: jsonb("cadence").$type<CadenceSettings>().notNull(),

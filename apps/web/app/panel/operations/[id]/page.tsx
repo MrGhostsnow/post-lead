@@ -7,6 +7,7 @@ import { clientLinkToken } from "@/lib/clientLink";
 import { activationSummary, lastSevenDays, operationLeads, operationPeople, weeklyReports } from "@/lib/panelData";
 import { formatDateTime, formatMoney, formatPhone, SOURCE_LABEL, STAGE_LABEL, TemperatureBadge } from "../../ui";
 import { ClientLinkControl } from "./Controls";
+import { ConnectWhatsApp } from "./ConnectWhatsApp";
 
 export const dynamic = "force-dynamic";
 
@@ -103,6 +104,44 @@ export default async function OperationPage({ params }: { params: Promise<{ id: 
         </section>
 
         <aside className="grid" style={{ alignContent: "start" }}>
+          <section className="card stack">
+            <h2>WhatsApp do cliente</h2>
+            <ul className="list">
+              <li>
+                <span>Número</span>
+                <span className="small">
+                  {operation.displayPhone ?? operation.phoneNumberId ?? "não conectado"}
+                  {operation.coexistence ? " · no app WhatsApp Business" : ""}
+                </span>
+              </li>
+              {operation.whatsappConnectedAt && (
+                <li>
+                  <span>Conectado em</span>
+                  <span className="small">{formatDateTime(operation.whatsappConnectedAt)}</span>
+                </li>
+              )}
+              {operation.coexistence && (
+                <li>
+                  <span>Contatos e histórico</span>
+                  <span className="small">{operation.historySyncRequestedAt ? "pedidos à Meta" : "não pedidos"}</span>
+                </li>
+              )}
+            </ul>
+            {process.env.NEXT_PUBLIC_META_APP_ID && process.env.NEXT_PUBLIC_META_ES_CONFIG_ID ? (
+              <ConnectWhatsApp
+                operationId={operation.id}
+                appId={process.env.NEXT_PUBLIC_META_APP_ID}
+                configId={process.env.NEXT_PUBLIC_META_ES_CONFIG_ID}
+                apiVersion={process.env.GRAPH_API_VERSION ?? "v25.0"}
+                connected={Boolean(operation.whatsappConnectedAt)}
+              />
+            ) : (
+              <p className="small">
+                Para conectar pelo painel, configure NEXT_PUBLIC_META_APP_ID e NEXT_PUBLIC_META_ES_CONFIG_ID (veja docs/whatsapp-onboarding.md).
+              </p>
+            )}
+          </section>
+
           <section className="card">
             <h2>Pessoas</h2>
             <ul className="list">

@@ -39,11 +39,17 @@ export class WhatsAppApiError extends Error {
 }
 
 export function createWhatsAppClient(options: {
-  accessToken: string;
+  /**
+   * One token for every number, or a lookup by sending number: each client
+   * connected through Embedded Signup has its own business token.
+   */
+  accessToken: string | ((phoneNumberId: string) => Promise<string>);
   apiVersion: string;
   fetchImpl?: typeof fetch;
 }): WhatsAppClient {
   const doFetch = options.fetchImpl ?? fetch;
+  const tokenFor = (phoneNumberId: string) =>
+    typeof options.accessToken === "string" ? Promise.resolve(options.accessToken) : options.accessToken(phoneNumberId);
 
   /**
    * Many Brazilian WhatsApp accounts still report their number without the
@@ -69,7 +75,7 @@ export function createWhatsAppClient(options: {
       {
         method: "POST",
         headers: {
-          Authorization: `Bearer ${options.accessToken}`,
+          Authorization: `Bearer ${await tokenFor(phoneNumberId)}`,
           "Content-Type": "application/json",
         },
         body: JSON.stringify({ messaging_product: "whatsapp", ...body }),
