@@ -106,3 +106,10 @@ legend { font-weight: 600; padding: 0 6px; }
 .legal-card h2 { font-size: 1.05rem; margin: 12px 0 0; }
 .legal-card p, .legal-card ul { margin: 0; }
 .legal-card ul { padding-left: 20px; display: grid; gap: 6px; }
+
+.sandbox-feed { display: grid; gap: 14px; }
+.sandbox-item { display: grid; gap: 6px; }
+.sandbox-item.in { justify-items: end; }
+.sandbox-item.out { justify-items: start; }
+.sandbox-buttons { display: flex; gap: 8px; flex-wrap: wrap; }
+.topnav { display: flex; align-items: baseline; gap: 20px; }

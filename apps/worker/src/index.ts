@@ -8,6 +8,7 @@ import { createClaudeAssistant, createClaudeFaqExtractor, createWhatsAppClient }
 import { createDb } from "@post-lead/db";
 import {
   ensureWeeklyReportsScheduled,
+  createSandboxWhatsApp,
   processPendingWebhooks,
   recoverStuckActions,
   runDueActions,
@@ -21,7 +22,11 @@ function required(name: string): string {
 
 const apiVersion = required("GRAPH_API_VERSION");
 const db = createDb();
-const whatsapp = createWhatsAppClient({ accessToken: required("META_ACCESS_TOKEN"), apiVersion });
+// Sandbox: nothing goes to Meta; the panel shows what would have been sent.
+const sandbox = process.env.WHATSAPP_SANDBOX === "true";
+const whatsapp = sandbox
+  ? createSandboxWhatsApp(db)
+  : createWhatsAppClient({ accessToken: required("META_ACCESS_TOKEN"), apiVersion });
 const toolPhoneNumberId = required("TOOL_PHONE_NUMBER_ID");
 const pollIntervalMs = Number(process.env.WORKER_POLL_INTERVAL_MS ?? 2000);
 
@@ -56,7 +61,9 @@ async function tick() {
 
 async function main() {
   await recoverStuckActions(db);
-  console.log(`[worker] started${assistant ? "" : " (assistant off: ANTHROPIC_API_KEY not set)"}`);
+  console.log(
+    `[worker] started${sandbox ? " in SANDBOX mode (nothing is sent to Meta)" : ""}${assistant ? "" : " (assistant off: ANTHROPIC_API_KEY not set)"}`,
+  );
 
   while (running) {
     try {

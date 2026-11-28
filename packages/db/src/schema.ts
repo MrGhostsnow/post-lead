@@ -310,3 +310,25 @@ export const webhookEvents = pgTable(
   },
   (t) => [index("webhook_events_pending_idx").on(t.processedAt, t.receivedAt)],
 );
+
+/**
+ * Sandbox mode (WHATSAPP_SANDBOX=true on the worker): every message the tool
+ * would send to Meta is stored here instead, and the panel shows it. Used to
+ * test end to end while Meta's test number cannot deliver to Brazilian phones.
+ */
+export const sandboxMessages = pgTable(
+  "sandbox_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    /** The sender: the client's number or the tool's number. */
+    phoneNumberId: text("phone_number_id").notNull(),
+    to: text("to").notNull(),
+    kind: text("kind").$type<"text" | "buttons" | "template">().notNull(),
+    body: text("body").notNull(),
+    template: text("template"),
+    /** Reply buttons; tapping one in the panel simulates the person's answer. */
+    buttons: jsonb("buttons").$type<{ id: string; title: string }[]>().notNull().default([]),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("sandbox_messages_created_idx").on(t.createdAt)],
+);

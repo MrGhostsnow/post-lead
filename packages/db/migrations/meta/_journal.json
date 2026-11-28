@@ -64,6 +64,13 @@
       "when": 1795821432249,
       "tag": "0008_thin_wasp",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1795825188183,
+      "tag": "0009_skinny_silver_centurion",
+      "breakpoints": true
     }
   ]
 }
